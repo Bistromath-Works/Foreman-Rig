@@ -1,0 +1,11 @@
+{
+  "name": "foreman-smoke",
+  "private": true,
+  "description": "A tiny job for checking that a Foreman crew works end to end",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,36 @@
+name: shared
+version: "1.0"
+description: "OpenRig shared resources used by the Foreman seats (vendored from OpenRig 0.6.5, trimmed)"
+
+resources:
+  skills:
+    - id: test-driven-development
+      path: skills/process/test-driven-development
+    - id: systematic-debugging
+      path: skills/process/systematic-debugging
+    - id: verification-before-completion
+      path: skills/process/verification-before-completion
+  plugins:
+    - id: openrig-core
+      source:
+        kind: local
+        path: openrig-home:plugins/openrig-core
+  runtime_resources:
+    - id: claude-default-settings
+      path: runtime/claude-settings.fragment.json
+      runtime: claude-code
+      type: claude_settings_fragment
+    - id: claude-default-mcp
+      path: runtime/claude-mcp.fragment.json
+      runtime: claude-code
+      type: claude_mcp_fragment
+    - id: codex-default-config
+      path: runtime/codex-config.fragment.toml
+      runtime: codex
+      type: codex_config_fragment
+    - id: claude-activity-hooks
+      path: runtime/claude-activity-hooks.json
+      runtime: claude-code
+      type: claude_activity_hooks
+
+profiles: {}

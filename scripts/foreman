@@ -1,0 +1,430 @@
+#!/usr/bin/env bash
+# Foreman setup helper for OpenRig.
+#
+#   scripts/foreman init    <project> [--muse]   create rig.<name>.yaml + <project>/.foreman/project.yaml
+#   scripts/foreman check   <project>            refuse while any SET-ME is left; validate with OpenRig
+#   scripts/foreman up      <project>            check, prepare the project, launch the crew
+#   scripts/foreman down    <project>            stop the crew
+#   scripts/foreman tracing <project> [--off]    send every seat's traces to Langfuse (keys from env)
+#
+# <project> is the path to the git repository the crew will work in.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEMPLATE="$ROOT/rig.template.yaml"
+PROJECT_TEMPLATE="$ROOT/project.template.yaml"
+# Paths OpenRig and the runtimes create in the project; kept out of git via .git/info/exclude.
+EXCLUDES=(.foreman/ .openrig/ .claude/ .codex/ .agents/ .pi/ .mcp.json CLAUDE.local.md)
+# Of those (plus AGENTS.md), the ones OpenRig may write into. If the project tracks files there,
+# they are marked skip-worktree so OpenRig's additions never show up in git status or commits.
+OPENRIG_WRITES=(.claude/ .codex/ .agents/ .pi/ .mcp.json CLAUDE.local.md AGENTS.md)
+SEATS=(lead architect dissenter builder reviewer inspector punchlist)   # muse is optional
+PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_paths banned_cmds)
+
+die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+
+# --- resolve the project and its rig file -------------------------------------------------
+
+resolve() {
+  [ -n "${1:-}" ] || usage
+  [ -d "$1" ] || die "project folder not found: $1"
+  PROJECT="$(cd "$1" && pwd -P)"
+  git -C "$PROJECT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "$PROJECT is not a git repository"
+  [ "$(git -C "$PROJECT" rev-parse --show-toplevel)" = "$PROJECT" ] \
+    || die "$PROJECT is inside a git repository; point at its top folder: $(git -C "$PROJECT" rev-parse --show-toplevel)"
+  SLUG="$(basename "$PROJECT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-\n' '-' | sed 's/^-*//;s/-*$//')"
+  [ -n "$SLUG" ] || die "cannot derive a name from $PROJECT"
+  RIG_NAME="foreman-$SLUG"
+  RIG_FILE="$ROOT/rig.$SLUG.yaml"
+  PROJECT_FILE="$PROJECT/.foreman/project.yaml"
+}
+
+require_rig_file() {
+  [ -f "$RIG_FILE" ] || die "no rig file for this project yet; run: scripts/foreman init $PROJECT"
+  local recorded
+  recorded="$(sed -n 's/^# project: //p' "$RIG_FILE" | head -1)"
+  [ "$recorded" = "$PROJECT" ] || die "$RIG_FILE was made for '$recorded', not $PROJECT.
+If you moved or renamed the project, edit the '# project:' line at the top of that file.
+If two projects share the folder name '$SLUG', use a second clone of Foreman for one of them."
+}
+
+require_rig() {
+  command -v rig >/dev/null 2>&1 || die "the 'rig' command (OpenRig) is not on PATH; install it first: https://www.openrig.dev"
+}
+
+# "id runtime model" for every member (a "- id:" block with an agent_ref), in file order.
+# An empty runtime or model prints as "-". The rig file keeps the template's layout.
+members() {
+  awk '
+    function clean(v) { gsub(/["\047]/, "", v); return v == "" ? "-" : v }
+    function flush()  { if (ref) print id, clean(rt), clean(md) }
+    /^[[:space:]]*- id:/      { flush(); id=$3; rt=""; md=""; ref=0; next }
+    /^[[:space:]]*agent_ref:/ { ref=1 }
+    /^[[:space:]]*runtime:/   { rt=$2 }
+    /^[[:space:]]*model:/     { md=$2 }
+    END                       { flush() }
+  ' "$RIG_FILE"
+}
+
+# --- init ---------------------------------------------------------------------------------
+
+cmd_init() {
+  local muse=0 arg project=""
+  for arg in "$@"; do
+    case "$arg" in
+      --muse) muse=1 ;;
+      -*) die "unknown option: $arg" ;;
+      *) [ -z "$project" ] || die "init takes one project path"; project="$arg" ;;
+    esac
+  done
+  resolve "$project"
+  if [ -f "$RIG_FILE" ]; then
+    require_rig_file
+    say "kept existing $RIG_FILE"
+    [ "$muse" -eq 0 ] || say "note: --muse ignored because the file already exists; delete the file and run init --muse again (it has no secrets, only your model choices)"
+  else
+    {
+      printf '# project: %s\n' "$PROJECT"
+      sed "s/^name: SET-ME$/name: $RIG_NAME/" "$TEMPLATE"
+    } > "$RIG_FILE.tmp"
+    if [ "$muse" -eq 0 ]; then
+      sed -i.bak '/--- muse (optional)/,/--- end muse ---/d; /muse edge:/d' "$RIG_FILE.tmp"
+      rm -f "$RIG_FILE.tmp.bak"
+    fi
+    mv "$RIG_FILE.tmp" "$RIG_FILE"
+    say "wrote $RIG_FILE (rig name $RIG_NAME$( [ "$muse" -eq 1 ] && echo ', with the muse'))"
+  fi
+  mkdir -p "$PROJECT/.foreman"
+  if [ -f "$PROJECT_FILE" ]; then
+    say "kept existing $PROJECT_FILE"
+  else
+    cp "$PROJECT_TEMPLATE" "$PROJECT_FILE"
+    say "wrote $PROJECT_FILE"
+  fi
+  hygiene
+  say ""
+  say "Next: replace every SET-ME in these two files, then run: scripts/foreman check $PROJECT"
+  say "  $RIG_FILE"
+  say "  $PROJECT_FILE"
+}
+
+# --- check --------------------------------------------------------------------------------
+
+# Value of a top-level "key: value" line in project.yaml, comment stripped and trimmed. A key
+# followed by a block list ("  - item" lines) prints "[list]". Prints nothing if empty or missing.
+project_value() {
+  awk -v k="$1" '
+    found && /^[[:space:]]*(#.*)?$/ { next }
+    found { if ($0 ~ /^[[:space:]]+-[[:space:]]/) print "[list]"; exit }
+    index($0, k ":") == 1 {
+      v = substr($0, length(k) + 2)
+      sub(/[[:space:]]+#.*$/, "", v); sub(/^[[:space:]]*#.*$/, "", v)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+      if (v != "") { print v; exit }
+      found = 1
+    }
+  ' "$PROJECT_FILE"
+}
+
+cmd_check() {
+  resolve "${1:-}"
+  require_rig_file
+  [ -f "$PROJECT_FILE" ] || die "missing $PROJECT_FILE; run: scripts/foreman init $PROJECT"
+  local problems=() id rt md key val seat found
+
+  while read -r id rt md; do
+    if [ "$rt" = SET-ME ] || [ "$md" = SET-ME ] || [ "$rt" = - ] || [ "$md" = - ]; then
+      problems+=("rig file, seat $id: runtime=$rt model=$md")
+    fi
+  done < <(members)
+  for seat in "${SEATS[@]}"; do
+    found="$(members | awk -v s="$seat" '$1 == s' )"
+    [ -n "$found" ] || problems+=("rig file: seat '$seat' is missing (only the muse is optional)")
+  done
+  grep -q '^name: SET-ME' "$RIG_FILE" && problems+=("rig file: name is still SET-ME")
+  for key in "${PROJECT_KEYS[@]}"; do
+    val="$(project_value "$key")"
+    if ! grep -q "^$key:" "$PROJECT_FILE"; then problems+=("project.yaml: '$key' is missing")
+    elif [ -z "$val" ]; then problems+=("project.yaml: '$key' has no value")
+    elif [ "$val" = SET-ME ]; then problems+=("project.yaml: '$key' is still SET-ME")
+    fi
+  done
+  if [ "${#problems[@]}" -gt 0 ]; then
+    say "Not ready. Fix these in $RIG_FILE"
+    say "and $PROJECT_FILE:"
+    printf '  - %s\n' "${problems[@]}"
+    die "fill in every SET-ME above, then run check again"
+  fi
+
+  while read -r id rt md; do
+    case "$rt" in
+      claude-code|codex|pi) ;;
+      *) die "seat $id: runtime '$rt' is not one of claude-code, codex, pi" ;;
+    esac
+    command -v "$( [ "$rt" = claude-code ] && echo claude || echo "$rt")" >/dev/null 2>&1 \
+      || die "seat $id uses runtime '$rt', but its command is not installed on PATH"
+  done < <(members)
+
+  require_rig
+  say "OpenRig validation (spec, seats and runtimes; the project folder is applied at launch):"
+  rig spec validate "$RIG_FILE" || die "rig spec validate failed (see above)"
+  rig spec preflight "$RIG_FILE" || die "rig spec preflight failed (see above; is the daemon running? 'rig daemon start')"
+  say "(permission_policy warnings are expected: seats launch at OpenRig's default permission floor)"
+  check_pi_keys
+  say "check passed: $RIG_NAME is ready to launch with: scripts/foreman up $PROJECT"
+}
+
+# Pi seats on OpenRouter need OPENROUTER_API_KEY on the daemon's allowlist (and in the daemon's
+# environment, which this script cannot see). Other providers are either built into Pi or come
+# from the user's Pi models.json.
+check_pi_keys() {
+  local id rt md need_or=0
+  while read -r id rt md; do
+    [ "$rt" = pi ] || continue
+    case "$md" in
+      openrouter/*) need_or=1 ;;
+      *) [ -f "$(pi_home)/models.json" ] \
+           || say "warning: seat $id uses provider '${md%%/*}' and there is no $(pi_home)/models.json; fine only if Pi has it built in (check: pi --list-models '${md#*/}')" ;;
+    esac
+  done < <(members)
+  if [ "$need_or" -eq 1 ]; then
+    require_rig
+    local allow
+    allow="$(rig config get recovery.provider_auth_env_allowlist 2>/dev/null | tr -d '[]" ' || true)"
+    case ",$allow," in
+      *,OPENROUTER_API_KEY,*) ;;
+      *) die "pi seats on OpenRouter need the key passed through to them. Run once:
+  rig config set recovery.provider_auth_env_allowlist ${allow:+$allow,}OPENROUTER_API_KEY
+then restart the daemon from a shell where OPENROUTER_API_KEY is exported:
+  rig daemon stop && rig daemon start
+(restarting the daemon affects every rig on it; check 'rig ps' first)" ;;
+    esac
+    case "$(daemon_has_env OPENROUTER_API_KEY)" in
+      no) die "OPENROUTER_API_KEY is allowlisted but the running daemon does not have it in its environment.
+Restart the daemon from a shell where the key is exported:
+  rig daemon stop && rig daemon start
+(restarting the daemon affects every rig on it; check 'rig ps' first)" ;;
+      yes) ;;
+      *) say "note: could not inspect the daemon's environment; OPENROUTER_API_KEY must be exported in the shell that started it" ;;
+    esac
+  fi
+}
+
+# "yes"/"no" if the running daemon's environment has variable $1, "unknown" if it can't be read
+# (only Linux exposes another process's environment, via /proc).
+daemon_has_env() {
+  local pid
+  pid="$(rig daemon status 2>/dev/null | sed -n 's/.*(pid \([0-9][0-9]*\)).*/\1/p')"
+  if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
+    if tr '\0' '\n' < "/proc/$pid/environ" | grep -q "^$1=."; then echo yes; else echo no; fi
+  else
+    echo unknown
+  fi
+}
+
+pi_home() { printf '%s' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; }
+
+# --- up / down ----------------------------------------------------------------------------
+
+cmd_up() {
+  cmd_check "${1:-}"
+  hygiene
+  seed_pi_models
+  say "Launching $RIG_NAME in $PROJECT ..."
+  rig up "$RIG_FILE" --cwd "$PROJECT"
+  say ""
+  say "The crew is starting. Watch it with: rig tui   (or: rig ps)"
+  say "Talk to the lead with: tmux attach -t crew-lead@$RIG_NAME   (Ctrl-b d to leave)"
+  say "If a seat asks whether to start fresh, answer y (Enter alone means No)."
+}
+
+cmd_down() {
+  resolve "${1:-}"
+  require_rig
+  rig down "$RIG_NAME"
+}
+
+# OpenRig gives each pi seat its own agent dir and does not copy models.json into it.
+# Link the user's file in before launch so custom providers (Ollama, vLLM, ...) resolve.
+seed_pi_models() {
+  local src id rt md dir
+  src="$(pi_home)/models.json"
+  [ -f "$src" ] || return 0
+  while read -r id rt md; do
+    [ "$rt" = pi ] || continue
+    dir="${OPENRIG_HOME:-$HOME/.openrig}/state/pi/crew-$id@$RIG_NAME/agent"
+    mkdir -p "$dir"
+    if [ -e "$dir/models.json" ] && [ ! -L "$dir/models.json" ]; then
+      say "keeping the seat's own $dir/models.json"
+    else
+      ln -sfn "$src" "$dir/models.json"
+    fi
+  done < <(members)
+}
+
+# --- tracing (Langfuse) -------------------------------------------------------------------
+
+# Each runtime has its own Langfuse plugin and reads keys from its own place. Keys are scoped to
+# this project and this crew, never written globally, so other work on the machine is not traced:
+#   claude-code: env block in <project>/.claude/settings.local.json
+#   codex:       <project>/.codex/langfuse.json
+#   pi:          langfuse.json in each seat's own agent dir (OpenRig strips env vars from Pi)
+CLAUDE_PLUGIN="langfuse-observability@langfuse-observability"
+CODEX_PLUGIN="tracing@codex-observability-plugin"
+PI_PLUGIN="npm:@langfuse/pi-observability-plugin"
+
+cmd_tracing() {
+  local off=0 arg project=""
+  for arg in "$@"; do
+    case "$arg" in
+      --off) off=1 ;;
+      -*) die "unknown option: $arg" ;;
+      *) [ -z "$project" ] || die "tracing takes one project path"; project="$arg" ;;
+    esac
+  done
+  resolve "$project"
+  require_rig_file
+  command -v node >/dev/null 2>&1 || die "node is needed to edit the JSON settings files (OpenRig needs it too)"
+  hygiene >/dev/null
+  if [ "$off" -eq 0 ]; then
+    [ -n "${LANGFUSE_PUBLIC_KEY:-}" ] && [ -n "${LANGFUSE_SECRET_KEY:-}" ] && [ -n "${LANGFUSE_BASE_URL:-}" ] \
+      || die "export LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and LANGFUSE_BASE_URL first (see docs/observability.md).
+Typing them keeps them out of your shell history:
+  read -rs LANGFUSE_SECRET_KEY && export LANGFUSE_SECRET_KEY"
+  fi
+
+  local runtimes id rt md
+  runtimes="$(members | awk '{print $2}' | sort -u)"
+  case "$runtimes" in *claude-code*) trace_claude "$off" ;; esac
+  case "$runtimes" in *codex*) trace_codex "$off" ;; esac
+  while read -r id rt md; do
+    [ "$rt" = pi ] && trace_pi "$off" "$id"
+  done < <(members)
+
+  if [ "$off" -eq 1 ]; then
+    say "tracing is off for $RIG_NAME. Restart the crew for running seats to stop sending traces."
+  else
+    say "tracing is on for $RIG_NAME (environment/tag '$RIG_NAME')."
+    say "Restart the crew so every seat picks it up: scripts/foreman down $PROJECT && scripts/foreman up $PROJECT"
+    say "Then check traces arrive: docs/observability.md, 'Is it working?'"
+  fi
+}
+
+# Refuse to put a secret in a file git could ever commit.
+secret_file_ok() {
+  local rel="${1#"$PROJECT"/}"
+  [ -z "$(git -C "$PROJECT" ls-files -- "$rel")" ] || die "$rel is tracked by git; refusing to write Langfuse keys into it"
+  git -C "$PROJECT" check-ignore -q -- "$rel" || die "$rel is not ignored by git; refusing to write Langfuse keys into it"
+}
+
+# Write JSON with node. The file path and values travel in env vars, never on a command line
+# (other users can read command lines). $1 = merge script body; FILE must be set.
+json_edit() {
+  ( umask 077; node -e '
+      const fs = require("fs"), f = process.env.FILE;
+      let j = {}; try { j = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { if (e.code !== "ENOENT") throw e; }
+      const out = (new Function("j", "env", process.argv[1]))(j, process.env);
+      if (out === null) { try { fs.unlinkSync(f); } catch {} }
+      else { fs.writeFileSync(f, JSON.stringify(out, null, 2) + "\n"); fs.chmodSync(f, 0o600); }
+    ' "$1" ) || die "could not update $FILE"
+}
+
+trace_claude() {
+  local file="$PROJECT/.claude/settings.local.json"
+  if [ "$1" -eq 0 ]; then
+    claude plugin list 2>/dev/null | grep -q "${CLAUDE_PLUGIN%@*}" || die "claude-code seats need the Langfuse plugin. Install it once (no keys; Foreman sets them per project):
+  claude plugin marketplace add langfuse/Claude-Observability-Plugin
+  claude plugin install $CLAUDE_PLUGIN"
+    command -v uv >/dev/null 2>&1 || say "warning: uv is not on PATH; the Claude plugin falls back to python3 with the langfuse package (see docs/observability.md)"
+  fi
+  mkdir -p "$PROJECT/.claude"; secret_file_ok "$file"
+  FILE="$file" TAG="$RIG_NAME" OFF="$1" json_edit '
+    const keys = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL", "CC_LANGFUSE_TRACE_TAGS"];
+    j.env = j.env || {};
+    for (const k of keys) delete j.env[k];
+    if (env.OFF !== "1") Object.assign(j.env, {LANGFUSE_PUBLIC_KEY: env.LANGFUSE_PUBLIC_KEY,
+      LANGFUSE_SECRET_KEY: env.LANGFUSE_SECRET_KEY, LANGFUSE_BASE_URL: env.LANGFUSE_BASE_URL, CC_LANGFUSE_TRACE_TAGS: env.TAG});
+    if (!Object.keys(j.env).length) delete j.env;
+    return j;'
+  say "claude-code seats: $( [ "$1" -eq 1 ] && echo 'keys removed from' || echo 'keys set in') .claude/settings.local.json"
+}
+
+trace_codex() {
+  local file="$PROJECT/.codex/langfuse.json"
+  if [ "$1" -eq 0 ]; then
+    grep -qF "\"$CODEX_PLUGIN\"" "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null || die "codex seats need the Langfuse plugin. Install it once:
+  codex plugin marketplace add langfuse/codex-observability-plugin
+then add to ~/.codex/config.toml:
+  [features]
+  hooks = true
+  [plugins.\"$CODEX_PLUGIN\"]
+  enabled = true"
+  fi
+  mkdir -p "$PROJECT/.codex"; secret_file_ok "$file"
+  FILE="$file" TAG="$RIG_NAME" OFF="$1" json_edit '
+    if (env.OFF === "1") return null;
+    return {enabled: true, public_key: env.LANGFUSE_PUBLIC_KEY, secret_key: env.LANGFUSE_SECRET_KEY,
+      base_url: env.LANGFUSE_BASE_URL, environment: env.TAG, tags: [env.TAG]};'
+  say "codex seats: $( [ "$1" -eq 1 ] && echo 'removed' || echo 'wrote') .codex/langfuse.json"
+  [ "$1" -eq 1 ] || say "  codex: the first time, open each codex seat and trust the Langfuse Stop hook in /hooks; no traces until you do"
+}
+
+trace_pi() {
+  local session="crew-$2@$RIG_NAME" dir
+  dir="${OPENRIG_HOME:-$HOME/.openrig}/state/pi/$session/agent"
+  mkdir -p "$dir"
+  if [ "$1" -eq 0 ]; then
+    grep -qF "${PI_PLUGIN#npm:}" "$dir/settings.json" 2>/dev/null \
+      || PI_CODING_AGENT_DIR="$dir" pi install "$PI_PLUGIN" >/dev/null \
+      || die "pi install $PI_PLUGIN failed for seat $2"
+  fi
+  FILE="$dir/langfuse.json" SESSION="$session" TAG="$RIG_NAME" OFF="$1" json_edit '
+    if (env.OFF === "1") return null;
+    return {publicKey: env.LANGFUSE_PUBLIC_KEY, secretKey: env.LANGFUSE_SECRET_KEY,
+      baseUrl: env.LANGFUSE_BASE_URL, userId: env.SESSION, environment: env.TAG};'
+  say "pi seat $2: $( [ "$1" -eq 1 ] && echo 'tracing removed' || echo 'plugin installed, langfuse.json written')"
+}
+
+# --- git hygiene --------------------------------------------------------------------------
+
+# Keep OpenRig's and the runtimes' files out of the project's git status, without touching
+# the project's .gitignore: untracked ones via .git/info/exclude, tracked ones OpenRig may
+# write into (AGENTS.md, .mcp.json, .claude/...) via skip-worktree.
+hygiene() {
+  local exclude entry f tracked
+  exclude="$(git -C "$PROJECT" rev-parse --git-path info/exclude)"
+  case "$exclude" in /*) ;; *) exclude="$PROJECT/$exclude" ;; esac
+  mkdir -p "$(dirname "$exclude")"
+  touch "$exclude"
+  add_exclude() { grep -qxF "$1" "$exclude" || printf '%s\n' "$1" >> "$exclude"; }
+  for entry in "${EXCLUDES[@]}"; do add_exclude "$entry"; done
+  if [ -n "$(git -C "$PROJECT" ls-files -- .foreman/ | head -1)" ]; then
+    say "note: this project already tracks files in .foreman/. Those stay tracked; new Foreman job"
+    say "      files are kept out of git (see docs/how-it-works.md). Remove '.foreman/' from"
+    say "      .git/info/exclude if you want new job ledgers committed."
+  fi
+  for entry in "${OPENRIG_WRITES[@]}"; do
+    tracked="$(git -C "$PROJECT" ls-files -- "$entry")"
+    if [ -z "$tracked" ]; then add_exclude "$entry"; continue; fi
+    while IFS= read -r f; do
+      git -C "$PROJECT" update-index --skip-worktree -- "$f"
+      say "marked tracked $f skip-worktree (OpenRig may write to it; see docs/troubleshooting.md)"
+    done <<< "$tracked"
+  done
+}
+
+# --- main ---------------------------------------------------------------------------------
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  init)  cmd_init "$@" ;;
+  check) cmd_check "$@" ;;
+  up)    cmd_up "$@" ;;
+  down)  cmd_down "$@" ;;
+  tracing) cmd_tracing "$@" ;;
+  *)     usage ;;
+esac

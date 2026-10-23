@@ -1,0 +1,90 @@
+# Foreman: an OpenRig setup (not a skill).
+#
+# Don't edit this file. `scripts/foreman init <project>` copies it to rig.<project>.yaml
+# (gitignored) and sets the name. In that copy, replace every SET-ME:
+#   runtime: claude-code | codex | pi
+#   model:   a model that runtime can run (see docs/models.md)
+# To run without the optional muse, delete the whole muse block (between its marker lines).
+# `scripts/foreman check <project>` refuses to launch while any SET-ME is left.
+
+version: "0.2"
+name: SET-ME
+summary: >
+  Foreman: a gated plan → dissent → build → review → inspect → punch-list pipeline. The lead
+  never writes code; the human approves the plan (Gate 1) and the merge (Gate 3).
+
+culture_file: CULTURE.md
+
+# OpenRig writes its instruction blocks for Claude seats here, so your CLAUDE.md is untouched.
+managed_blocks:
+  claude-code: CLAUDE.local.md
+
+docs:
+  - path: README.md
+  - path: SETUP.md
+  - path: docs/models.md
+
+pods:
+  - id: crew
+    label: Foreman crew
+    members:
+      - id: lead
+        agent_ref: "local:agents/lead"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      - id: architect
+        agent_ref: "local:agents/architect"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      - id: dissenter
+        agent_ref: "local:agents/dissenter"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      - id: builder
+        agent_ref: "local:agents/builder"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      - id: reviewer
+        agent_ref: "local:agents/reviewer"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      - id: inspector
+        agent_ref: "local:agents/inspector"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      - id: punchlist
+        agent_ref: "local:agents/punchlist"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      # --- muse (optional): delete from here to the end marker to run without it ---
+      - id: muse
+        agent_ref: "local:agents/muse"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      # --- end muse ---
+    edges:
+      - {kind: delegates_to, from: lead, to: architect}
+      - {kind: delegates_to, from: lead, to: dissenter}
+      - {kind: delegates_to, from: lead, to: builder}
+      - {kind: delegates_to, from: lead, to: reviewer}
+      - {kind: delegates_to, from: lead, to: inspector}
+      - {kind: delegates_to, from: lead, to: punchlist}
+      - {kind: delegates_to, from: lead, to: muse}  # muse edge: delete with the muse block
+
+edges: []

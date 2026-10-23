@@ -1,0 +1,4 @@
+# Each user's filled-in rig files (one per project) stay local.
+rig.*.yaml
+!rig.template.yaml
+*.tmp

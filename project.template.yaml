@@ -1,0 +1,27 @@
+# Foreman project settings.
+# The setup copies this file to <your project>/.foreman/project.yaml. Every SET-ME must be
+# replaced before the crew can launch. Every seat reads this file; no seat guesses a command
+# that is not here.
+
+# Branch jobs start from and merge back into.
+base_branch: SET-ME            # e.g. main
+
+# Command that must exit 0 before a job starts (safety checks, clean environment), or "none".
+preflight_cmd: SET-ME          # e.g. bash scripts/preflight.sh, or none
+
+# The one command that proves the project works: tests, typecheck, lint, build. It must start
+# and stop any server it needs by itself, and exit non-zero on failure.
+verify_cmd: SET-ME             # e.g. npm test, pnpm verify, pytest, cargo test, make check
+
+# Folder of tests written before the job that the builder must make pass but never edit,
+# or "none" (the builder then writes the tests first from the plan).
+acceptance_tests: SET-ME       # e.g. test/acceptance, or none
+
+# Extra paths no seat may edit, relative to the repo root. [] for none. Read by the crew, not a
+# program, so qualifiers work: "db/migrations/ (existing files only; new ones are fine)".
+protected_paths: SET-ME        # e.g. [migrations/, .github/], or []
+
+# Commands no seat may run, on top of the built-in ban on push, remotes, gh and backgrounded
+# processes. List deploys, production database tools, anything that reaches outside this repo.
+# Read by the crew: any command containing a listed text is banned. [] for none.
+banned_cmds: SET-ME            # e.g. ["vercel", "supabase db push", "terraform apply"], or []
