@@ -73,7 +73,7 @@ More detail: [docs/how-it-works.md](docs/how-it-works.md).
 
 Open Claude Code or Codex in any terminal and paste this, with your project's path:
 
-> Set up Foreman from https://github.com/Bistromath-Works/foreman-rig for my project at
+> Set up Foreman from https://github.com/Bistromath-Works/Foreman-Rig for my project at
 > `~/code/my-app`. Clone it to `~/foreman` if it isn't there yet, then follow its SETUP.md.
 
 The agent checks what you have installed, asks which AI providers you use, proposes a model for
@@ -88,7 +88,7 @@ tmux, and at least one of [Claude Code](https://docs.anthropic.com/en/docs/claud
 or [Pi](https://github.com/earendil-works/pi), logged in.
 
 ```bash
-git clone https://github.com/Bistromath-Works/foreman-rig ~/foreman
+git clone https://github.com/Bistromath-Works/Foreman-Rig ~/foreman
 cd ~/foreman
 
 scripts/foreman init ~/code/my-app            # add --muse for the optional eighth seat
