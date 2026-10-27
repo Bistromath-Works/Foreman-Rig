@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 (2026-10-27)
+
+- Seats now wait for a queue item from the lead. In the first smoke test, three seats built
+  `SPEC.md` on boot and one committed straight to the base branch (the lead caught it).
+  `CULTURE.md` now says: on boot, and whenever the queue is empty, do nothing and wait.
+
 ## 1.0.0 (2026-10-23)
 
 First release as an [OpenRig](https://www.openrig.dev) setup. Tested with OpenRig 0.6.5 on Linux.

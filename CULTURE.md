@@ -11,7 +11,11 @@ first command. Where this file or your role says "the verify command" or "the ba
 means the value in `project.yaml`. Never guess a command the file does not name.
 
 ## How work moves
-- Work arrives as a queue item from the lead. `rig queue claim <id>` it, then do it.
+- **Work arrives only as a queue item from the lead.** On boot, and whenever your queue is empty,
+  do nothing: no reading the spec, no planning, no building, even if a `SPEC.md` or task is
+  sitting in the repo. Say you are ready in one line and wait. Starting on your own puts work on
+  the base branch outside the pipeline.
+- `rig queue claim <id>` the item, then do it.
 - Your inputs are files the lead names, under `.foreman/jobs/<job-id>/ctx/`. Read those first.
 - Write your result to the exact output path the lead gave you: a Markdown file that starts
   with a short header block (e.g. `verdict: PASS`, `blocked_on: null`), then the body.

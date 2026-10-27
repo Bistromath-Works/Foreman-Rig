@@ -72,6 +72,12 @@ runtime in that seat.
 It shouldn't: on boot it says it's ready and waits for a job. If it does start, tell it to stop
 and re-read its role.
 
+## A seat started work before the lead gave it any
+Seats wait for a queue item from the lead (`CULTURE.md`, "How work moves"). Crews launched
+before 1.0.1 lack that rule, and eager models may build a `SPEC.md` they find in the repo,
+even committing to the base branch. The lead's pre-job check catches this and asks you what
+to do. Update Foreman, then start the crew over (see below) so seats get the new rule.
+
 ## I changed a model in the rig file and nothing changed
 OpenRig reads the rig file only when it first creates the rig. After that, `rig up` resumes the
 crew from OpenRig's own records, and edits to `rig.<project>.yaml` are ignored. Two ways out:
