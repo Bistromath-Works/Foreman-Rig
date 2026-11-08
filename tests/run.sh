@@ -41,6 +41,9 @@ if [ "\$1 \$2" = "spec validate" ] && [ -f "$T/validate.fail" ]; then echo "bad 
 exit 0
 EOF
   chmod +x "$T/bin/rig"
+  # tmux is always a stub: no test may start a real session.
+  printf '#!/bin/sh\necho "$*" >> "%s/tmux.calls"\n[ "$1" = has-session ] && exit 1\nexit 0\n' "$T" > "$T/bin/tmux"
+  chmod +x "$T/bin/tmux"
   export PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" OPENRIG_HOME="$T/home/.openrig"
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   unset PI_CODING_AGENT_DIR
@@ -347,6 +350,171 @@ git -C "$P" add -f .claude/settings.local.json && git -C "$P" commit -qm tracked
 out="$(env $LF "$F" tracing "$P" 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -q 'tracked by git; refusing' && ! grep -q sk-test "$P/.claude/settings.local.json" \
   && ok "tracing refuses to put keys in a file git tracks" || bad "tracked secret file" "$out"
+teardown
+
+# --- unstick watcher lifecycle ---
+setup
+"$F" init "$P" >/dev/null 2>&1; fill
+"$F" up "$P" >/dev/null 2>&1
+grep -q "new-session -d -s foreman-unstick@foreman-my-app" "$T/tmux.calls" 2>/dev/null \
+  && ok "up starts the unstick watcher in its own tmux session" || bad "up starts watcher" "$(cat "$T/tmux.calls" 2>/dev/null)"
+"$F" down "$P" >/dev/null 2>&1
+grep -q "kill-session -t =foreman-unstick@foreman-my-app" "$T/tmux.calls" \
+  && ok "down stops the unstick watcher" || bad "down stops watcher" "$(cat "$T/tmux.calls")"
+teardown
+
+# --- unstick: press Enter on OpenRig messages left unsent ---
+
+# Fake tmux: a seat's pane is $T/pane.<session>; send-keys is recorded.
+unstick_setup() {
+  setup
+  "$F" init "$P" >/dev/null 2>&1; fill checker=codex:gpt-6-astra
+  cat > "$T/bin/tmux" <<STUB
+#!/bin/sh
+case "\$1" in
+  capture-pane) t="\$4"; t="\${t#=}"; t="\${t%:}"; [ -f "$T/pane.\$t" ] && cat "$T/pane.\$t" || exit 1 ;;
+  send-keys) echo "\$3 \$4" >> "$T/keys" ;;
+  has-session) exit 1 ;;
+  *) echo "\$*" >> "$T/tmux.calls" ;;
+esac
+STUB
+  chmod +x "$T/bin/tmux"
+  export FOREMAN_UNSTICK_IDLE=0
+  NB="$(printf '\302\240')"
+}
+pass2() { "$F" unstick "$P" --once >/dev/null 2>&1; "$F" unstick "$P" --once >/dev/null 2>&1; }
+OWN="crew-owner@foreman-my-app"; CHK="crew-checker@foreman-my-app"
+# Seed the watcher's state as if it had seen this exact pane at time $2 (the copy the script keeps).
+seed_state() {
+  local d="$OPENRIG_HOME/foreman-unstick/foreman-my-app"
+  mkdir -p "$d"; { cat "$T/pane.$1"; printf x; } > "$d/$1.pane"
+  printf '%s %s\n' "$2" "${3:-0}" > "$d/$1"
+}
+
+unstick_setup
+printf 'old\n❯ sent earlier\n─────\n❯%sFrom: crew-checker@x --- ↩ Reply: rig\n  send crew-checker@x "..."   │ side panel\n─────\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ "$(cat "$T/keys" 2>/dev/null)" = "=$OWN: Enter" ] && ok "unstick: presses Enter once on an unsent message, even when it wraps" \
+  || bad "unstick press" "$(cat "$T/keys" 2>/dev/null)"
+teardown
+
+unstick_setup
+printf '❯ From: crew-checker@x --- ↩ Reply: rig send crew-checker@x\n● done\n─────\n❯%sa draft I am typing\n─────\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: leaves a human's draft alone, even under an OpenRig message already sent" \
+  || bad "unstick draft" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '─────\n❯%s[Pasted text #3 +6 lines]\n─────\n' "$NB" > "$T/pane.$OWN"
+pass2
+printf '#!/bin/sh\n[ "$1 $2" = "queue list" ] && echo %s\nexit 0\n' "'[{\"state\":\"pending\"}]'" > "$T/bin/rig"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: a folded paste is never pressed, even with a pending queue item (it may be the human's)" \
+  || bad "unstick fold" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '› From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\n  model line\n' > "$T/pane.$CHK"
+for i in 1 2 3 4 5 6; do "$F" unstick "$P" --once >/dev/null 2>&1; done
+[ "$(wc -l < "$T/keys" 2>/dev/null)" = 3 ] && grep -q "leaving it for a human" "$OPENRIG_HOME/foreman-unstick/foreman-my-app/log" \
+  && ok "unstick: Codex prompt; stops after 3 presses on the same pane and logs it" || bad "unstick cap" "$(cat "$T/keys" 2>/dev/null)"
+teardown
+
+unstick_setup
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+FOREMAN_UNSTICK_IDLE=3600 pass2
+[ ! -s "$T/keys" ] && ok "unstick: waits until the pane has been unchanged for the idle time" || bad "unstick idle" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '› a draft about the [OpenRig watchdog config\n  model line\n' > "$T/pane.$CHK"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: a draft that merely mentions the watchdog is left alone" || bad "unstick watchdog word" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '› From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\n• done\n›\n  model line\n' > "$T/pane.$CHK"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: an empty Codex prompt (bare ›) under a sent message is left alone" || bad "unstick codex empty" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%sFrom: x --- ↩%sReply:%srig%ssend x\n' "$NB" "$NB" "$NB" "$NB" > "$T/pane.$OWN"
+pass2
+[ -s "$T/keys" ] && ok "unstick: no-break spaces inside the message still match" || bad "unstick nbsp marker"
+teardown
+
+unstick_setup
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+seed_state "$OWN" 08 0
+out="$("$F" unstick "$P" --once 2>&1)"; rc=$?
+[ "$rc" = 0 ] && [ -s "$T/keys" ] && ok "unstick: a state record with a leading zero neither crashes nor blocks" || bad "unstick corrupt state" "rc=$rc $out"
+printf 'garbage\n' > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
+"$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "unstick: an unreadable state record starts over" || bad "unstick garbage state" "rc=$rc"
+teardown
+
+unstick_setup
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+FOREMAN_UNSTICK_IDLE=3600 "$F" unstick "$P" --once >/dev/null 2>&1   # the script records its own hash
+st="$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
+printf '1 0\n' > "$st"   # ...then age it: seen long ago
+printf '\n\n' >> "$T/pane.$OWN"
+FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
+[ ! -s "$T/keys" ] && ok "unstick: a change in trailing blank rows counts as a change" || bad "unstick trailing rows" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%sFrom: x --- ↩ Reply: rig\342\200\257send x\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ -s "$T/keys" ] && ok "unstick: any width of space inside the message still matches" || bad "unstick narrow nbsp"
+teardown
+
+unstick_setup
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+seed_state "$OWN" 18446744073709551616
+FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && [ ! -s "$T/keys" ] && ok "unstick: an out-of-range timestamp starts the timer over instead of pressing" \
+  || bad "unstick huge since" "rc=$rc $(cat "$T/keys" 2>/dev/null)"
+teardown
+
+unstick_setup
+rm -f "$RIG"; "$F" init "$P" --auditor >/dev/null 2>&1; fill auditor=pi:m
+"$F" unstick "$P" --once >/dev/null 2>&1   # sanity: the rig file now has a pi auditor
+grep -q "id: auditor" "$RIG" && grep -q "runtime: pi" "$RIG" || bad "pi test setup: no pi auditor in rig file"
+printf 'From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\na draft\n' > "$T/pane.crew-auditor@foreman-my-app"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: pi seats are never pressed (no prompt marker to go by)" || bad "unstick pi" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%s[Pasted text #2 +4 lines][OpenRig watchdog scheduler · policy: x] You are parked\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: a human's folded paste with a watchdog wake appended is left alone" || bad "unstick fold+wake" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%smy draft From: crew-checker@x --- ↩ Reply: rig send crew-checker@x "..."\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: a human's typed draft with an OpenRig message appended is left alone" || bad "unstick draft+msg" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%sFrom: crew-checker@x\n  ---\n  ↩ Reply: rig send crew-checker@x "..."[OpenRig watchdog scheduler · policy: p] You are parked\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ -s "$T/keys" ] && ok "unstick: the real stuck shape (handoff plus watchdog wake on one unsent prompt) is pressed" || bad "unstick real shape"
+teardown
+
+unstick_setup
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+seed_state "$OWN" 1
+printf '1 0 corrupt trailing fields\n' > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
+FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
+[ ! -s "$T/keys" ] && ok "unstick: a state record with extra fields restarts the timer" || bad "unstick extra fields" "$(cat "$T/keys")"
+printf '1 0\n\n' > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
+FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
+[ ! -s "$T/keys" ] && ok "unstick: a state record with trailing blank lines restarts the timer" || bad "unstick blank lines" "$(cat "$T/keys")"
 teardown
 
 # --- the smoke-test example project ---

@@ -5,6 +5,7 @@
 #   scripts/foreman check   <project>            refuse while any SET-ME is left; validate with OpenRig
 #   scripts/foreman up      <project>            check, prepare the project, launch the crew
 #   scripts/foreman down    <project>            stop the crew
+#   scripts/foreman unstick <project> [--once]   press Enter on OpenRig messages left unsent (up starts it)
 #   scripts/foreman tracing <project> [--off]    send every seat's traces to Langfuse (keys from env)
 #
 # <project> is the path to the git repository the crew will work in.
@@ -254,12 +255,123 @@ cmd_up() {
   say "The crew is starting. Watch it with: rig tui   (or: rig ps)"
   say "Talk to the owner with: tmux attach -t crew-owner@$RIG_NAME   (Ctrl-b d to leave)"
   say "If a seat asks whether to start fresh, answer y (Enter alone means No)."
+  start_unstick
 }
 
 cmd_down() {
   resolve "${1:-}"
   require_rig
   rig down "$RIG_NAME"
+  stop_unstick
+}
+
+# --- unstick ------------------------------------------------------------------------------
+#
+# OpenRig delivers a message by pasting it into the seat's prompt, waiting 200 ms and pressing
+# Enter once. It never checks that the message was sent. Sometimes the Enter is lost and the
+# message sits unsent in the prompt until a human presses Enter (see docs/troubleshooting.md).
+# This watcher presses Enter for the seat, only when all of these hold:
+#   - the seat's unsent prompt is OpenRig's: it starts with OpenRig's header ("From:" or the
+#     watchdog's "[OpenRig watchdog scheduler") and shows its reply line or the watchdog header.
+#     Text typed before it, or any folded paste ("[Pasted text #N ...]", which hides who pasted
+#     it), means a human may be in it: never pressed. (OpenRig's messages render inline.)
+#   - the pane has not changed for UNSTICK_IDLE seconds (the seat is not working, nobody typing);
+#   - it has pressed fewer than UNSTICK_TRIES times for this exact pane.
+# Every press is logged.
+UNSTICK_IDLE="${FOREMAN_UNSTICK_IDLE:-60}"
+UNSTICK_EVERY="${FOREMAN_UNSTICK_EVERY:-20}"
+UNSTICK_TRIES=3
+UNSTICK_MARKERS=('RET>Reply:rigsend' '[OpenRigwatchdogscheduler')   # as flatten() leaves them
+
+unstick_session() { printf 'foreman-unstick@%s' "$RIG_NAME"; }
+unstick_dir() { printf '%s/foreman-unstick/%s' "${OPENRIG_HOME:-$HOME/.openrig}" "$RIG_NAME"; }
+
+start_unstick() {
+  command -v tmux >/dev/null 2>&1 || { say "note: tmux not found, so the unstick watcher is not running"; return 0; }
+  local s; s="$(unstick_session)"
+  tmux has-session -t "=$s" 2>/dev/null && return 0
+  tmux new-session -d -s "$s" "$(printf '%q ' "$ROOT/scripts/foreman" unstick "$PROJECT")"
+  say "Unstick watcher running (tmux session $s; log: $(unstick_dir)/log)."
+}
+
+stop_unstick() {
+  command -v tmux >/dev/null 2>&1 || return 0
+  tmux kill-session -t "=$(unstick_session)" 2>/dev/null || true
+}
+
+# The unsent prompt of a seat on runtime $1, from its first line to the bottom of the pane.
+# claude-code: the input line starts with "❯" and a no-break space (sent messages above it use a
+# plain space, so they never match). codex: the last line starting with "›" (tmux trims the space
+# of an empty prompt). No prompt line found, or any other runtime: nothing. pi draws no prompt
+# marker, so its unsent text cannot be told from what it already sent: pi seats are not watched.
+staged_region() {
+  awk -v rt="$1" -v claude="^❯"$'\xc2\xa0' '{ l[NR]=$0 }
+    rt == "claude-code" && $0 ~ claude { p=NR }
+    rt == "codex" && /^›( |$)/ { p=NR }
+    END {
+      if (!p) exit
+      for (i=p; i<=NR; i++) print l[i]
+    }'
+}
+
+# One line of printable ASCII: side panel dropped (text after a │), the reply arrow kept as
+# "RET>", then every other byte that is not printable ASCII removed. Any kind of space is gone,
+# so a prompt that wraps, or spaces of any width, still show the marker whole.
+flatten() { awk '{ sub(/│.*$/, ""); gsub(/↩/, "RET>"); print }' | LC_ALL=C tr -cd '[:graph:]'; }
+
+
+unstick_log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$(unstick_dir)/log"; }
+
+unstick_pass() {
+  local id rt md seat pane region m hit now since tries f _h
+  now="$(date +%s)"
+  while read -r id rt md; do
+    seat="crew-$id@$RIG_NAME"
+    f="$(unstick_dir)/$seat"
+    # The trailing x keeps trailing blank rows, so a change there still counts as a change.
+    pane="$(tmux capture-pane -p -t "=$seat:" 2>/dev/null && printf x)" || { rm -f "$f" "$f.pane"; continue; }
+    region="$(printf '%s' "${pane%x}" | staged_region "$rt" | flatten)"
+    hit=0
+    case "$region" in
+      *'[Pastedtext#'*|*'[PastedContent'*) ;;                       # a fold: could be anyone's
+      'From:'*|'[OpenRigwatchdogscheduler'*)                          # starts as OpenRig's
+        for m in "${UNSTICK_MARKERS[@]}"; do case "$region" in *"$m"*) hit=1 ;; esac; done ;;
+    esac
+    [ "$hit" = 1 ] || { rm -f "$f" "$f.pane"; continue; }
+    # State: a copy of the pane ($f.pane) and "since tries" ($f). Any byte of difference, or a
+    # record that is not two short plain numbers, starts the idle timer over.
+    printf '%s' "$pane" > "$f.new"
+    _h="$(cat "$f" 2>/dev/null)" || _h=""
+    since="${_h% *}"; tries="${_h#* }"
+    if ! cmp -s "$f.new" "$f.pane" || ! printf '%s\n' "$_h" | grep -Eqx '[0-9]{1,12} [0-9]{1,2}' \
+      || [ "$(wc -l < "$f" 2>/dev/null || echo 0)" -ne 1 ]; then
+      mv "$f.new" "$f.pane"; printf '%s 0\n' "$now" > "$f"; continue
+    fi
+    rm -f "$f.new"
+    since=$((10#$since)); tries=$((10#$tries))
+    [ $((now - since)) -ge "$UNSTICK_IDLE" ] || continue
+    if [ "$tries" -ge "$UNSTICK_TRIES" ]; then
+      [ "$tries" -eq "$UNSTICK_TRIES" ] && unstick_log "$seat: OpenRig message still unsent after $tries presses; leaving it for a human"
+      printf '%s %s\n' "$since" $((UNSTICK_TRIES + 1)) > "$f"
+      continue
+    fi
+    tmux send-keys -t "=$seat:" Enter || continue
+    tries=$((tries + 1))
+    printf '%s %s\n' "$since" "$tries" > "$f"
+    unstick_log "$seat: pressed Enter on an unsent OpenRig message (pane unchanged $((now - since))s, press $tries)"
+  done < <(members)
+}
+
+cmd_unstick() {
+  local once=0
+  [ "${2:-}" = --once ] && once=1
+  resolve "${1:-}"
+  require_rig_file
+  command -v tmux >/dev/null 2>&1 || die "tmux not found"
+  mkdir -p "$(unstick_dir)"
+  if [ "$once" = 1 ]; then unstick_pass; return 0; fi
+  say "Watching $RIG_NAME for unsent OpenRig messages (every ${UNSTICK_EVERY}s). Ctrl-C to stop."
+  while :; do unstick_pass; sleep "$UNSTICK_EVERY"; done
 }
 
 # OpenRig gives each pi seat its own agent dir and does not copy models.json into it.
@@ -440,5 +552,6 @@ case "$cmd" in
   up)    cmd_up "$@" ;;
   down)  cmd_down "$@" ;;
   tracing) cmd_tracing "$@" ;;
+  unstick) cmd_unstick "$@" ;;
   *)     usage ;;
 esac

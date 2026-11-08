@@ -86,7 +86,7 @@ scripts/foreman init ~/code/my-app            # add --auditor for the optional t
 # fill in every SET-ME in the two files it names: rig.my-app.yaml and ~/code/my-app/.foreman/project.yaml
 scripts/foreman check ~/code/my-app           # refuses until nothing is SET-ME, then validates with OpenRig
 scripts/foreman tracing ~/code/my-app         # optional: Langfuse tracing (keys from env, see below)
-scripts/foreman up ~/code/my-app              # launch the crew
+scripts/foreman up ~/code/my-app              # launch the crew (and the unstick watcher)
 tmux attach -t crew-owner@foreman-my-app      # talk to the owner (Ctrl-b d to leave)
 scripts/foreman down ~/code/my-app            # stop the crew
 ```
