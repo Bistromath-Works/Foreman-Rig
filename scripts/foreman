@@ -280,7 +280,7 @@ cmd_down() {
 UNSTICK_IDLE="${FOREMAN_UNSTICK_IDLE:-60}"
 UNSTICK_EVERY="${FOREMAN_UNSTICK_EVERY:-20}"
 UNSTICK_TRIES=3
-UNSTICK_MARKERS=('↩Reply:rigsend' '[OpenRigwatchdogscheduler')   # compared with all spaces removed
+UNSTICK_MARKERS=('RET>Reply:rigsend' '[OpenRigwatchdogscheduler')   # as flatten() leaves them
 
 unstick_session() { printf 'foreman-unstick@%s' "$RIG_NAME"; }
 unstick_dir() { printf '%s/foreman-unstick/%s' "${OPENRIG_HOME:-$HOME/.openrig}" "$RIG_NAME"; }
@@ -313,9 +313,10 @@ staged_region() {
     }'
 }
 
-# Joined into one line with every space (plain, tab, no-break) removed, side panel dropped
-# (text after a │), so a prompt that wraps still shows the marker whole.
-flatten() { awk -v nb=$'\xc2\xa0' '{ sub(/│.*$/, ""); gsub(nb, ""); gsub(/[ \t]/, ""); printf "%s", $0 }'; }
+# One line of printable ASCII: side panel dropped (text after a │), the reply arrow kept as
+# "RET>", then every other byte that is not printable ASCII removed. Any kind of space is gone,
+# so a prompt that wraps, or spaces of any width, still show the marker whole.
+flatten() { awk '{ sub(/│.*$/, ""); gsub(/↩/, "RET>"); print }' | LC_ALL=C tr -cd '[:graph:]'; }
 
 seat_has_pending() {
   rig queue list --destination "$1" -o json 2>/dev/null | grep -q '"state": *"pending"'
@@ -324,36 +325,40 @@ seat_has_pending() {
 unstick_log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$(unstick_dir)/log"; }
 
 unstick_pass() {
-  local id rt md seat pane region m hit hash now since tries f _h
+  local id rt md seat pane region m hit now since tries f _h
   now="$(date +%s)"
   while read -r id rt md; do
     seat="crew-$id@$RIG_NAME"
     f="$(unstick_dir)/$seat"
     # The trailing x keeps trailing blank rows, so a change there still counts as a change.
-    pane="$(tmux capture-pane -p -t "=$seat:" 2>/dev/null && printf x)" || { rm -f "$f"; continue; }
+    pane="$(tmux capture-pane -p -t "=$seat:" 2>/dev/null && printf x)" || { rm -f "$f" "$f.pane"; continue; }
     region="$(printf '%s' "${pane%x}" | staged_region "$rt" | flatten)"
     hit=0
     for m in "${UNSTICK_MARKERS[@]}"; do case "$region" in *"$m"*) hit=1 ;; esac; done
     if [ "$hit" = 0 ]; then
       case "$region" in *'[Pastedtext#'*|*'[PastedContent'*) seat_has_pending "$seat" && hit=1 ;; esac
     fi
-    [ "$hit" = 1 ] || { rm -f "$f"; continue; }
-    hash="$(printf '%s' "$pane" | cksum | cut -d' ' -f1)"
-    _h=""; since=""; tries=""
-    read -r _h since tries 2>/dev/null < "$f" || true
-    # Unreadable state (missing field, not a plain number) starts over; 10# drops leading zeros.
-    case "$since" in ''|*[!0-9]*) _h="" ;; *) since=$((10#$since)) ;; esac
-    case "$tries" in ''|*[!0-9]*) _h="" ;; *) tries=$((10#$tries)) ;; esac
-    if [ "${_h:-}" != "$hash" ]; then printf '%s %s 0\n' "$hash" "$now" > "$f"; continue; fi
+    [ "$hit" = 1 ] || { rm -f "$f" "$f.pane"; continue; }
+    # State: a copy of the pane ($f.pane) and "since tries" ($f). Any byte of difference, or a
+    # record that is not two short plain numbers, starts the idle timer over.
+    printf '%s' "$pane" > "$f.new"
+    since=""; tries=""
+    read -r since tries _h 2>/dev/null < "$f" || true
+    if ! cmp -s "$f.new" "$f.pane" \
+      || ! printf '%s %s' "$since" "$tries" | grep -Eqx '[0-9]{1,12} [0-9]{1,2}'; then
+      mv "$f.new" "$f.pane"; printf '%s 0\n' "$now" > "$f"; continue
+    fi
+    rm -f "$f.new"
+    since=$((10#$since)); tries=$((10#$tries))
     [ $((now - since)) -ge "$UNSTICK_IDLE" ] || continue
     if [ "$tries" -ge "$UNSTICK_TRIES" ]; then
       [ "$tries" -eq "$UNSTICK_TRIES" ] && unstick_log "$seat: OpenRig message still unsent after $tries presses; leaving it for a human"
-      printf '%s %s %s\n' "$hash" "$since" $((UNSTICK_TRIES + 1)) > "$f"
+      printf '%s %s\n' "$since" $((UNSTICK_TRIES + 1)) > "$f"
       continue
     fi
     tmux send-keys -t "=$seat:" Enter || continue
     tries=$((tries + 1))
-    printf '%s %s %s\n' "$hash" "$since" "$tries" > "$f"
+    printf '%s %s\n' "$since" "$tries" > "$f"
     unstick_log "$seat: pressed Enter on an unsent OpenRig message (pane unchanged $((now - since))s, press $tries)"
   done < <(members)
 }

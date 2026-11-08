@@ -384,11 +384,11 @@ STUB
 }
 pass2() { "$F" unstick "$P" --once >/dev/null 2>&1; "$F" unstick "$P" --once >/dev/null 2>&1; }
 OWN="crew-owner@foreman-my-app"; CHK="crew-checker@foreman-my-app"
-# Seed the watcher's state as if it had seen this pane at time $2 (the hash the script computes).
+# Seed the watcher's state as if it had seen this exact pane at time $2 (the copy the script keeps).
 seed_state() {
-  local h; h="$( { cat "$T/pane.$1"; printf x; } | cksum | cut -d' ' -f1)"
-  mkdir -p "$OPENRIG_HOME/foreman-unstick/foreman-my-app"
-  printf '%s %s %s\n' "$h" "$2" "${3:-0}" > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$1"
+  local d="$OPENRIG_HOME/foreman-unstick/foreman-my-app"
+  mkdir -p "$d"; { cat "$T/pane.$1"; printf x; } > "$d/$1.pane"
+  printf '%s %s\n' "$2" "${3:-0}" > "$d/$1"
 }
 
 unstick_setup
@@ -460,10 +460,24 @@ unstick_setup
 printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
 FOREMAN_UNSTICK_IDLE=3600 "$F" unstick "$P" --once >/dev/null 2>&1   # the script records its own hash
 st="$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
-awk '{ print $1, 1, 0 }' "$st" > "$st.new" && mv "$st.new" "$st"   # ...then age it: seen long ago
+printf '1 0\n' > "$st"   # ...then age it: seen long ago
 printf '\n\n' >> "$T/pane.$OWN"
 FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
 [ ! -s "$T/keys" ] && ok "unstick: a change in trailing blank rows counts as a change" || bad "unstick trailing rows" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%s↩ Reply: rig\342\200\257send x\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ -s "$T/keys" ] && ok "unstick: any width of space inside the message still matches" || bad "unstick narrow nbsp"
+teardown
+
+unstick_setup
+printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+seed_state "$OWN" 18446744073709551616
+FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && [ ! -s "$T/keys" ] && ok "unstick: an out-of-range timestamp starts the timer over instead of pressing" \
+  || bad "unstick huge since" "rc=$rc $(cat "$T/keys" 2>/dev/null)"
 teardown
 
 # --- the smoke-test example project ---
