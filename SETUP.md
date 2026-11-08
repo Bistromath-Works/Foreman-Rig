@@ -117,7 +117,8 @@ If the project already has a `.foreman/` folder with tracked files (an older For
 tell the person: those stay tracked as history and are treated like any other repo file (the
 owner changes them only on a job branch). Everything the crew writes there itself, including
 `STATE.md`, is always kept out of git: the owner updates it while the checker works, so it must
-never be part of a commit.
+never be part of a commit. `scripts/foreman check` refuses to launch while `.foreman/STATE.md` is
+tracked and prints the one command that untracks it.
 
 ## 5. Keys and providers
 

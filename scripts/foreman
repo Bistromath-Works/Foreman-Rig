@@ -154,6 +154,9 @@ cmd_check() {
     [ -n "$found" ] || problems+=("rig file: seat '$seat' is missing (only the auditor is optional)")
   done
   grep -q '^name: SET-ME' "$RIG_FILE" && problems+=("rig file: name is still SET-ME")
+  # The owner writes STATE.md while the checker reviews, so it must never be part of a commit.
+  [ -z "$(git -C "$PROJECT" ls-files -- .foreman/STATE.md)" ] \
+    || problems+=(".foreman/STATE.md is tracked by git; the crew's ledger must stay out of commits. Untrack it (the file stays): git -C \"$PROJECT\" rm --cached .foreman/STATE.md, then commit")
   for key in "${PROJECT_KEYS[@]}"; do
     val="$(project_value "$key")"
     if ! grep -q "^$key:" "$PROJECT_FILE"; then problems+=("project.yaml: '$key' is missing")

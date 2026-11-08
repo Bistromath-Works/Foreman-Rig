@@ -226,6 +226,14 @@ for v in manual '"manual"' "'manual'" 7 '"7"'; do
   out="$("$F" check "$P" 2>&1)"; rc=$?
   [ $rc -eq 0 ] && ok "audit_every: $v passes check" || bad "audit_every $v" "$out"
 done
+sed -i "s/^audit_every:.*/audit_every: 5/" "$P/.foreman/project.yaml"
+git -C "$P" add -f .foreman/STATE.md && git -C "$P" commit -qm state
+out="$("$F" check "$P" 2>&1)"; rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -q "STATE.md is tracked by git" && echo "$out" | grep -q "rm --cached .foreman/STATE.md" \
+  && ok "check refuses a tracked STATE.md and says how to untrack it" || bad "tracked STATE.md" "$out"
+git -C "$P" rm -q --cached .foreman/STATE.md && git -C "$P" commit -qm untrack
+out="$("$F" check "$P" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && ok "check passes once STATE.md is untracked" || bad "untracked STATE.md" "$out"
 sed -i "/^audit_every:/d" "$P/.foreman/project.yaml"
 out="$("$F" check "$P" 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -q "'audit_every' is missing" && ok "a 1.x project.yaml without audit_every is told what to add" || bad "audit_every missing" "$out"
