@@ -414,9 +414,9 @@ hygiene() {
   add_exclude() { grep -qxF "$1" "$exclude" || printf '%s\n' "$1" >> "$exclude"; }
   for entry in "${EXCLUDES[@]}"; do add_exclude "$entry"; done
   if [ -n "$(git -C "$PROJECT" ls-files -- .foreman/ | head -1)" ]; then
-    say "note: this project already tracks files in .foreman/. Those stay tracked; new Foreman job"
-    say "      files are kept out of git (see docs/how-it-works.md). Remove '.foreman/' from"
-    say "      .git/info/exclude if you want new job ledgers committed."
+    say "note: this project already tracks files in .foreman/. Those stay tracked as ordinary repo"
+    say "      files (the owner changes them only on a job branch). Everything the crew writes there"
+    say "      itself, including STATE.md, is kept out of git (see docs/how-it-works.md)."
   fi
   for entry in "${OPENRIG_WRITES[@]}"; do
     tracked="$(git -C "$PROJECT" ls-files -- "$entry")"

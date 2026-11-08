@@ -35,8 +35,9 @@ Never guess a command the file does not name.
 ## One checkout, one seat working
 All seats share one checkout and any local database or services. Only the seat holding work
 runs commands that change things. The exception is the owner's ledger under `.foreman/`
-(`STATE.md`, a job's `LOG.md` and `DECISIONS.md`): outside git and outside any candidate, so the
-owner may write it at any time. The checker may review in a detached worktree outside the
+(`STATE.md`, a job's `LOG.md` and `DECISIONS.md`): always outside git and outside any candidate,
+so the owner may write it at any time. Files a project already tracks under `.foreman/` are
+ordinary repo files, changed only on a job branch. The checker may review in a detached worktree outside the
 repo and removes it when done.
 
 ## Safety (absolute, every seat)

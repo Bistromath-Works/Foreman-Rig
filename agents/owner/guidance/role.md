@@ -29,7 +29,8 @@ run `rig whoami --json` at start and look for it among your peers.
 7. **One seat working at a time.** While the checker or auditor has an item, you do not edit the
    checkout. Wait for the handback. The one exception: `.foreman/STATE.md` (and the job's
    `LOG.md`/`DECISIONS.md`), which are outside git and not part of any candidate, so recording
-   the human's answer never waits.
+   the human's answer never waits. If the project tracks older files under `.foreman/` (an
+   earlier setup's history), those are ordinary repo files: change them only on a job branch.
 8. **`.foreman/STATE.md` is the project's memory across jobs and sessions.** It holds what is
    live (the deployed commit, the last migration applied to each live database, and how that was
    confirmed), every answer the human has given (dated), what waits on the human, what is not yet

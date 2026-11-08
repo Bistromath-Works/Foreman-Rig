@@ -99,7 +99,7 @@ It works best as a different model family from the owner and the checker.
 | Path | What | In git? |
 |---|---|---|
 | `PROJECT/.foreman/project.yaml` | Project settings every seat reads | No (excluded locally) |
-| `PROJECT/.foreman/jobs/<job-id>/` | Spec, briefs, verdicts, decisions, `LOG.md`, `RESUME.md` | No (remove `.foreman/` from `.git/info/exclude` if you want ledgers committed) |
+| `PROJECT/.foreman/jobs/<job-id>/` | Spec, briefs, verdicts, decisions, `LOG.md`, `RESUME.md` | No, always: the owner writes its ledger while the checker works, so it must never be part of a commit |
 | `PROJECT/.foreman/STATE.md` | What is live, your answers, what waits on you, open work | No |
 | `PROJECT/.foreman/audits/` | Auditor reports and the merged-job count | No |
 | `foreman/<job-id>` branch | The owner's commits | Yes, merged after the checker's PASS |

@@ -114,8 +114,10 @@ Show the person your proposal with one line of reasoning per field, take their c
 then write the file.
 
 If the project already has a `.foreman/` folder with tracked files (an older Foreman setup),
-tell the person: those stay tracked, but `init` keeps new job files out of git. If they want
-job ledgers committed, remove `.foreman/` from `.git/info/exclude`.
+tell the person: those stay tracked as history and are treated like any other repo file (the
+owner changes them only on a job branch). Everything the crew writes there itself, including
+`STATE.md`, is always kept out of git: the owner updates it while the checker works, so it must
+never be part of a commit.
 
 ## 5. Keys and providers
 
