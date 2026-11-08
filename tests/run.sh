@@ -14,7 +14,7 @@ bad()  { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf 
 setup() {
   T="$(mktemp -d)"
   mkdir -p "$T/foreman" "$T/bin" "$T/home"
-  cp -r "$SRC/rig.template.yaml" "$SRC/project.template.yaml" "$SRC/scripts" "$T/foreman/"
+  cp -r "$SRC/rig.template.yaml" "$SRC/project.template.yaml" "$SRC/state.template.md" "$SRC/scripts" "$T/foreman/"
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   mkdir -p "$T/My App" && git -C "$T/My App" init -q && git -C "$T/My App" commit -q --allow-empty -m init
   P="$T/My App"
@@ -71,6 +71,9 @@ out="$("$F" init "$P" 2>&1)"
 grep -q '^name: foreman-my-app$' "$RIG" && ok "init names the rig after the project folder" || bad "init rig name" "$out"
 grep -q "^# project: $P\$" "$RIG" && ok "init records the project path" || bad "init project path"
 [ -f "$P/.foreman/project.yaml" ] && ok "init writes .foreman/project.yaml" || bad "init project.yaml"
+grep -q '^## Human answers' "$P/.foreman/STATE.md" && ok "init writes a STATE.md for the owner" || bad "init STATE.md"
+echo "- 2026-01-01 fee: answered" >> "$P/.foreman/STATE.md"; "$F" init "$P" >/dev/null 2>&1
+grep -q 'fee: answered' "$P/.foreman/STATE.md" && ok "init never overwrites an existing STATE.md" || bad "STATE.md overwritten"
 grep -qxF .foreman/ "$P/.git/info/exclude" && grep -qxF CLAUDE.local.md "$P/.git/info/exclude" && grep -qxF AGENTS.md "$P/.git/info/exclude" \
   && ok "init keeps OpenRig files out of git" || bad "init exclude" "$(cat "$P/.git/info/exclude")"
 [ -z "$(git -C "$P" status --porcelain)" ] && ok "project tree stays clean after init" || bad "tree dirty" "$(git -C "$P" status --porcelain)"
@@ -223,6 +226,14 @@ for v in manual '"manual"' "'manual'" 7 '"7"'; do
   out="$("$F" check "$P" 2>&1)"; rc=$?
   [ $rc -eq 0 ] && ok "audit_every: $v passes check" || bad "audit_every $v" "$out"
 done
+sed -i "s/^audit_every:.*/audit_every: 5/" "$P/.foreman/project.yaml"
+git -C "$P" add -f .foreman/STATE.md && git -C "$P" commit -qm state
+out="$("$F" check "$P" 2>&1)"; rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -q "STATE.md is tracked by git" && echo "$out" | grep -q "rm --cached .foreman/STATE.md" \
+  && ok "check refuses a tracked STATE.md and says how to untrack it" || bad "tracked STATE.md" "$out"
+git -C "$P" rm -q --cached .foreman/STATE.md && git -C "$P" commit -qm untrack
+out="$("$F" check "$P" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && ok "check passes once STATE.md is untracked" || bad "untracked STATE.md" "$out"
 sed -i "/^audit_every:/d" "$P/.foreman/project.yaml"
 out="$("$F" check "$P" 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -q "'audit_every' is missing" && ok "a 1.x project.yaml without audit_every is told what to add" || bad "audit_every missing" "$out"

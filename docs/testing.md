@@ -58,15 +58,15 @@ Tell the owner: `build the job in SPEC.md`.
 
 **What a pass looks like:**
 
-- The owner confirms the job once, builds `src/slugify.js` test-first on a `foreman/<job-id>`
+- The owner says in a few lines what it understood, builds `src/slugify.js` test-first on a `foreman/<job-id>`
   branch, writes a numbered brief, and hands it to the checker. The checker writes a verdict;
   on PASS the owner merges into `main` and runs `node --test` again there.
 - `main` has a merge commit, `node --test` passes, and `test/acceptance/` is unchanged
   (`git diff HEAD~1 -- test/acceptance` is empty).
 - `.foreman/jobs/<job-id>/` holds `SPEC.md`, the brief, the verdict, `LOG.md` and `RESUME.md`,
-  and none of it is in git.
-- Nobody asked you anything except the owner, and the owner asked at most once (to confirm the
-  job). A slugify job has no big decisions and no domain questions.
+  and none of it is in git. `.foreman/STATE.md` has a dated History line for the job.
+- Nobody asked you anything. The spec is clear, so the owner has nothing to confirm, and a
+  slugify job has no big decisions and no domain questions.
 - With tracing on: traces from every seat that worked, tagged `foreman-smoke-test`.
 
 **What a failure tells you:** a seat that never starts is a runtime, login or model-id problem

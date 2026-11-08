@@ -51,6 +51,9 @@ you: "build X"  →  owner reads the area, lists what to remove, plans
   pushes only when you say so, and only after any database migration the change needs is live.
 - **Everything is written down** in `.foreman/jobs/<job-id>/`: the spec, every brief, every
   verdict, every decision, and a `RESUME.md` a fresh session can pick the job up from.
+- **You answer once.** `.foreman/STATE.md` is the crew's memory across jobs and sessions: what is
+  live, every answer you have given, what waits on you. The owner reads it on boot and writes
+  your answers into it the turn you give them.
 
 More detail: [docs/how-it-works.md](docs/how-it-works.md). Why it changed:
 [CHANGELOG.md](CHANGELOG.md).
@@ -135,6 +138,7 @@ README.md               you are here
 SETUP.md                setup instructions written for an AI agent to follow
 rig.template.yaml       the crew: owner, checker and the optional auditor, every runtime and model SET-ME
 project.template.yaml   per-project settings: base branch, verify command, protected paths, banned commands, audit cadence
+state.template.md       the starting STATE.md: the crew's memory across jobs (live systems, your answers, open work)
 CULTURE.md              rules every seat follows
 agents/<seat>/          each seat's role prompt and OpenRig manifest
 agents/shared/          OpenRig's shared seat resources (vendored, Apache-2.0)

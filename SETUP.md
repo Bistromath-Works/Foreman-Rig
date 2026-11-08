@@ -114,8 +114,11 @@ Show the person your proposal with one line of reasoning per field, take their c
 then write the file.
 
 If the project already has a `.foreman/` folder with tracked files (an older Foreman setup),
-tell the person: those stay tracked, but `init` keeps new job files out of git. If they want
-job ledgers committed, remove `.foreman/` from `.git/info/exclude`.
+tell the person: those stay tracked as history and are treated like any other repo file (the
+owner changes them only on a job branch). Everything the crew writes there itself, including
+`STATE.md`, is always kept out of git: the owner updates it while the checker works, so it must
+never be part of a commit. `scripts/foreman check` refuses to launch while `.foreman/STATE.md` is
+tracked and prints the one command that untracks it.
 
 ## 5. Keys and providers
 
@@ -189,7 +192,8 @@ Tell them, plainly:
 3. **If a seat asks whether to start fresh, answer `y`.** Enter alone means No.
 4. **Approve any hook or folder-trust prompt** a seat shows on first start.
 5. **Start a job** by telling the owner what to build: a path to a spec file, or a plain
-   description (the owner writes it up and asks them to confirm once). After that it asks only
+   description (the owner writes it up, says what it understood, and asks only if the goal is
+   genuinely unclear). After that it asks only
    about big decisions, serious failures and domain knowledge, and tells them when a push or a
    migration is theirs to do.
 6. **Prove it works** before a real job, if they have 20 minutes: the smoke test in

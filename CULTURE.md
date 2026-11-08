@@ -9,6 +9,11 @@ a job is stuck. Your session name and rig are in `rig whoami --json`.
 The human is asked about three things only: **big decisions, serious failures, and
 domain-specific knowledge**. Only the owner asks. Every other seat routes questions to the owner.
 
+## The project state
+`.foreman/STATE.md` is the project's memory across jobs and sessions: what is live, every
+answer the human has given, what waits on the human, open work. It outranks older notes in
+`.foreman/`. Read it before your first task. Only the owner writes it.
+
 ## The project settings
 `.foreman/project.yaml` in the repo holds this project's facts: base branch, preflight command,
 verify command, acceptance test path, protected paths, banned commands, audit cadence. Read it
@@ -29,7 +34,10 @@ Never guess a command the file does not name.
 
 ## One checkout, one seat working
 All seats share one checkout and any local database or services. Only the seat holding work
-runs commands that change things. The checker may review in a detached worktree outside the
+runs commands that change things. The exception is the owner's ledger under `.foreman/`
+(`STATE.md`, a job's `LOG.md` and `DECISIONS.md`): always outside git and outside any candidate,
+so the owner may write it at any time. Files a project already tracks under `.foreman/` are
+ordinary repo files, changed only on a job branch. The checker may review in a detached worktree outside the
 repo and removes it when done.
 
 ## Safety (absolute, every seat)

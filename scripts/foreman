@@ -13,6 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE="$ROOT/rig.template.yaml"
 PROJECT_TEMPLATE="$ROOT/project.template.yaml"
+STATE_TEMPLATE="$ROOT/state.template.md"
 # Paths OpenRig and the runtimes create in the project; kept out of git via .git/info/exclude.
 EXCLUDES=(.foreman/ .openrig/ .claude/ .codex/ .agents/ .pi/ .mcp.json CLAUDE.local.md)
 # Of those (plus AGENTS.md), the ones OpenRig may write into. If the project tracks files there,
@@ -105,6 +106,13 @@ cmd_init() {
     cp "$PROJECT_TEMPLATE" "$PROJECT_FILE"
     say "wrote $PROJECT_FILE"
   fi
+  # The owner's memory across jobs: never overwritten, it holds the human's answers.
+  if [ -f "$PROJECT/.foreman/STATE.md" ]; then
+    say "kept existing $PROJECT/.foreman/STATE.md"
+  else
+    cp "$STATE_TEMPLATE" "$PROJECT/.foreman/STATE.md"
+    say "wrote $PROJECT/.foreman/STATE.md (the owner fills it in)"
+  fi
   hygiene
   say ""
   say "Next: replace every SET-ME in these two files, then run: scripts/foreman check $PROJECT"
@@ -146,6 +154,9 @@ cmd_check() {
     [ -n "$found" ] || problems+=("rig file: seat '$seat' is missing (only the auditor is optional)")
   done
   grep -q '^name: SET-ME' "$RIG_FILE" && problems+=("rig file: name is still SET-ME")
+  # The owner writes STATE.md while the checker reviews, so it must never be part of a commit.
+  [ -z "$(git -C "$PROJECT" ls-files -- .foreman/STATE.md)" ] \
+    || problems+=(".foreman/STATE.md is tracked by git; the crew's ledger must stay out of commits. Untrack it (the file stays): git -C \"$PROJECT\" rm --cached .foreman/STATE.md, then commit")
   for key in "${PROJECT_KEYS[@]}"; do
     val="$(project_value "$key")"
     if ! grep -q "^$key:" "$PROJECT_FILE"; then problems+=("project.yaml: '$key' is missing")
@@ -406,9 +417,9 @@ hygiene() {
   add_exclude() { grep -qxF "$1" "$exclude" || printf '%s\n' "$1" >> "$exclude"; }
   for entry in "${EXCLUDES[@]}"; do add_exclude "$entry"; done
   if [ -n "$(git -C "$PROJECT" ls-files -- .foreman/ | head -1)" ]; then
-    say "note: this project already tracks files in .foreman/. Those stay tracked; new Foreman job"
-    say "      files are kept out of git (see docs/how-it-works.md). Remove '.foreman/' from"
-    say "      .git/info/exclude if you want new job ledgers committed."
+    say "note: this project already tracks files in .foreman/. Those stay tracked as ordinary repo"
+    say "      files (the owner changes them only on a job branch). Everything the crew writes there"
+    say "      itself, including STATE.md, is kept out of git (see docs/how-it-works.md)."
   fi
   for entry in "${OPENRIG_WRITES[@]}"; do
     tracked="$(git -C "$PROJECT" ls-files -- "$entry")"

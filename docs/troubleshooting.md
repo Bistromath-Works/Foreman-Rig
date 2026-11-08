@@ -77,6 +77,13 @@ They act only on a queue item from the owner (`CULTURE.md`, "How work moves"). I
 a `SPEC.md` it found in the repo, tell it to stop; the owner's intake check (clean tree, on the
 base branch) catches any stray commits.
 
+## The owner asks me something I already answered
+The answer isn't in `.foreman/STATE.md`, or the owner didn't read it. Answer once more and tell
+it to record the answer under "Human answers". A crew launched before 2.0.1 doesn't have the
+STATE.md rule: update Foreman, `rig down foreman-<project> --delete`, `scripts/foreman up <project>`
+(the ledger and STATE.md stay). Facts only you know, like which migrations are live, belong in
+its "Live systems" table.
+
 ## Upgrading a 1.x crew
 Foreman 2 has different seats, so a 1.x crew can't be resumed. `rig down foreman-<project>
 --delete`, delete `rig.<project>.yaml`, run `scripts/foreman init <project>` (add `--auditor` if

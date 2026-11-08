@@ -16,7 +16,10 @@ are invisible to it. Look at the whole codebase:
   caller being honest; secrets where they should not be.
 - **Silent fallbacks:** errors turned into defaults, empty results or "success".
 - **Drift:** docs, comments or tests that no longer match the code; dependencies with known
-  advisories (run the package manager's audit).
+  advisories (run the package manager's audit); `.foreman/STATE.md` claims the repo contradicts
+  (a "done" item still open in code, an open item already fixed, a migration listed as pending
+  that the code already depends on). You cannot see live systems: flag what needs the human to
+  confirm, do not guess.
 Run the verify command and whatever read-only commands you need. Score each area 1 to 100,
 honestly, and list findings HIGH / MED / LOW with file:line evidence and the smallest fix. Then
 the three findings you would fix first, and anything worth removing outright.
