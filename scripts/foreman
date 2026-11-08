@@ -280,7 +280,7 @@ cmd_down() {
 UNSTICK_IDLE="${FOREMAN_UNSTICK_IDLE:-60}"
 UNSTICK_EVERY="${FOREMAN_UNSTICK_EVERY:-20}"
 UNSTICK_TRIES=3
-UNSTICK_MARKERS=('↩Reply:rigsend' '[OpenRigwatchdog')   # compared with all spaces removed
+UNSTICK_MARKERS=('↩Reply:rigsend' '[OpenRigwatchdogscheduler')   # compared with all spaces removed
 
 unstick_session() { printf 'foreman-unstick@%s' "$RIG_NAME"; }
 unstick_dir() { printf '%s/foreman-unstick/%s' "${OPENRIG_HOME:-$HOME/.openrig}" "$RIG_NAME"; }
@@ -298,13 +298,24 @@ stop_unstick() {
   tmux kill-session -t "=$(unstick_session)" 2>/dev/null || true
 }
 
-# The unsent prompt, from its first line to the bottom of the pane. Claude's input line starts
-# with "❯" and a no-break space (sent messages above it use a plain space, so they never match);
-# Codex's with "› " (its input box is the last one). A runtime with neither (pi): last 15 lines.
+# The unsent prompt of a seat on runtime $1, from its first line to the bottom of the pane.
+# claude-code: the input line starts with "❯" and a no-break space (sent messages above it use a
+# plain space, so they never match). codex: the last line starting with "›" (tmux trims the space
+# of an empty prompt). No prompt line found: nothing. pi has no prompt line: its last 15 lines.
 staged_region() {
-  awk -v claude="^❯"$'\xc2\xa0' '{ l[NR]=$0 } $0 ~ claude { c=NR } /^› / { x=NR }
-    END { s = c ? c : (x ? x : (NR > 15 ? NR-14 : 1)); for (i=s; i<=NR; i++) print l[i] }'
+  awk -v rt="$1" -v claude="^❯"$'\xc2\xa0' '{ l[NR]=$0 }
+    rt == "claude-code" && $0 ~ claude { p=NR }
+    rt == "codex" && /^›( |$)/ { p=NR }
+    END {
+      if (rt == "pi") p = NR > 15 ? NR-14 : 1
+      if (!p) exit
+      for (i=p; i<=NR; i++) print l[i]
+    }'
 }
+
+# Joined into one line with every space (plain, tab, no-break) removed, side panel dropped
+# (text after a │), so a prompt that wraps still shows the marker whole.
+flatten() { awk -v nb=$'\xc2\xa0' '{ sub(/│.*$/, ""); gsub(nb, ""); gsub(/[ \t]/, ""); printf "%s", $0 }'; }
 
 seat_has_pending() {
   rig queue list --destination "$1" -o json 2>/dev/null | grep -q '"state": *"pending"'
@@ -318,9 +329,9 @@ unstick_pass() {
   while read -r id rt md; do
     seat="crew-$id@$RIG_NAME"
     f="$(unstick_dir)/$seat"
-    pane="$(tmux capture-pane -p -t "=$seat:" 2>/dev/null)" || { rm -f "$f"; continue; }
-    # Join the region's lines (the prompt wraps), drop any side panel (text after a │), no spaces.
-    region="$(printf '%s\n' "$pane" | staged_region | sed 's/│.*$//' | tr -d ' \t\n')"
+    # The trailing x keeps trailing blank rows, so a change there still counts as a change.
+    pane="$(tmux capture-pane -p -t "=$seat:" 2>/dev/null && printf x)" || { rm -f "$f"; continue; }
+    region="$(printf '%s' "${pane%x}" | staged_region "$rt" | flatten)"
     hit=0
     for m in "${UNSTICK_MARKERS[@]}"; do case "$region" in *"$m"*) hit=1 ;; esac; done
     if [ "$hit" = 0 ]; then
@@ -328,9 +339,11 @@ unstick_pass() {
     fi
     [ "$hit" = 1 ] || { rm -f "$f"; continue; }
     hash="$(printf '%s' "$pane" | cksum | cut -d' ' -f1)"
-    _h=""; since="$now"; tries=0
+    _h=""; since=""; tries=""
     read -r _h since tries 2>/dev/null < "$f" || true
-    case "$since$tries" in *[!0-9]*|"") _h="" ;; esac   # unreadable state: start over
+    # Unreadable state (missing field, not a plain number) starts over; 10# drops leading zeros.
+    case "$since" in ''|*[!0-9]*) _h="" ;; *) since=$((10#$since)) ;; esac
+    case "$tries" in ''|*[!0-9]*) _h="" ;; *) tries=$((10#$tries)) ;; esac
     if [ "${_h:-}" != "$hash" ]; then printf '%s %s 0\n' "$hash" "$now" > "$f"; continue; fi
     [ $((now - since)) -ge "$UNSTICK_IDLE" ] || continue
     if [ "$tries" -ge "$UNSTICK_TRIES" ]; then

@@ -368,7 +368,7 @@ teardown
 # Fake tmux: a seat's pane is $T/pane.<session>; send-keys is recorded.
 unstick_setup() {
   setup
-  "$F" init "$P" >/dev/null 2>&1; fill
+  "$F" init "$P" >/dev/null 2>&1; fill checker=codex:gpt-6-astra
   cat > "$T/bin/tmux" <<STUB
 #!/bin/sh
 case "\$1" in
@@ -383,7 +383,13 @@ STUB
   NB="$(printf '\302\240')"
 }
 pass2() { "$F" unstick "$P" --once >/dev/null 2>&1; "$F" unstick "$P" --once >/dev/null 2>&1; }
-OWN="crew-owner@foreman-my-app"
+OWN="crew-owner@foreman-my-app"; CHK="crew-checker@foreman-my-app"
+# Seed the watcher's state as if it had seen this pane at time $2 (the hash the script computes).
+seed_state() {
+  local h; h="$( { cat "$T/pane.$1"; printf x; } | cksum | cut -d' ' -f1)"
+  mkdir -p "$OPENRIG_HOME/foreman-unstick/foreman-my-app"
+  printf '%s %s %s\n' "$h" "$2" "${3:-0}" > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$1"
+}
 
 unstick_setup
 printf 'old\n❯ sent earlier\n─────\n❯%sFrom: crew-checker@x --- ↩ Reply: rig\n  send crew-checker@x "..."   │ side panel\n─────\n' "$NB" > "$T/pane.$OWN"
@@ -410,7 +416,7 @@ pass2
 teardown
 
 unstick_setup
-printf '› From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\n  model line\n' > "$T/pane.crew-checker@foreman-my-app"
+printf '› From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\n  model line\n' > "$T/pane.$CHK"
 for i in 1 2 3 4 5 6; do "$F" unstick "$P" --once >/dev/null 2>&1; done
 [ "$(wc -l < "$T/keys" 2>/dev/null)" = 3 ] && grep -q "leaving it for a human" "$OPENRIG_HOME/foreman-unstick/foreman-my-app/log" \
   && ok "unstick: Codex prompt; stops after 3 presses on the same pane and logs it" || bad "unstick cap" "$(cat "$T/keys" 2>/dev/null)"
@@ -420,6 +426,44 @@ unstick_setup
 printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
 FOREMAN_UNSTICK_IDLE=3600 pass2
 [ ! -s "$T/keys" ] && ok "unstick: waits until the pane has been unchanged for the idle time" || bad "unstick idle" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '› a draft about the [OpenRig watchdog config\n  model line\n' > "$T/pane.$CHK"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: a draft that merely mentions the watchdog is left alone" || bad "unstick watchdog word" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '› From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\n• done\n›\n  model line\n' > "$T/pane.$CHK"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: an empty Codex prompt (bare ›) under a sent message is left alone" || bad "unstick codex empty" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%s↩%sReply:%srig%ssend x\n' "$NB" "$NB" "$NB" "$NB" > "$T/pane.$OWN"
+pass2
+[ -s "$T/keys" ] && ok "unstick: no-break spaces inside the message still match" || bad "unstick nbsp marker"
+teardown
+
+unstick_setup
+printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+seed_state "$OWN" 08 0
+out="$("$F" unstick "$P" --once 2>&1)"; rc=$?
+[ "$rc" = 0 ] && [ -s "$T/keys" ] && ok "unstick: a state record with a leading zero neither crashes nor blocks" || bad "unstick corrupt state" "rc=$rc $out"
+printf 'garbage\n' > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
+"$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "unstick: an unreadable state record starts over" || bad "unstick garbage state" "rc=$rc"
+teardown
+
+unstick_setup
+printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+FOREMAN_UNSTICK_IDLE=3600 "$F" unstick "$P" --once >/dev/null 2>&1   # the script records its own hash
+st="$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
+awk '{ print $1, 1, 0 }' "$st" > "$st.new" && mv "$st.new" "$st"   # ...then age it: seen long ago
+printf '\n\n' >> "$T/pane.$OWN"
+FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
+[ ! -s "$T/keys" ] && ok "unstick: a change in trailing blank rows counts as a change" || bad "unstick trailing rows" "$(cat "$T/keys")"
 teardown
 
 # --- the smoke-test example project ---

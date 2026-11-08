@@ -85,7 +85,7 @@ presses Enter. The crew stalls with nothing waiting on you.
 
 `scripts/foreman up` starts a watcher for this in its own tmux session,
 `foreman-unstick@foreman-<project>`. It presses Enter only when the seat's unsent prompt holds an
-OpenRig message (the `↩ Reply: rig send` line or the watchdog header; a folded
+OpenRig message (the `↩ Reply: rig send` line or the `[OpenRig watchdog scheduler` header; a folded
 `[Pasted text #N]` counts only while OpenRig's queue has a pending item for that seat) and the
 pane has not changed for 60 seconds. It tries at most three times per stuck message, then
 leaves it for you. Every press is logged in `~/.openrig/foreman-unstick/foreman-<project>/log`.
