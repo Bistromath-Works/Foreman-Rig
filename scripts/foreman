@@ -151,7 +151,8 @@ cmd_check() {
     if ! grep -q "^$key:" "$PROJECT_FILE"; then problems+=("project.yaml: '$key' is missing")
     elif [ -z "$val" ]; then problems+=("project.yaml: '$key' has no value")
     elif [ "$val" = SET-ME ]; then problems+=("project.yaml: '$key' is still SET-ME")
-    elif [ "$key" = audit_every ] && ! printf '%s' "$val" | grep -Eq '^([1-9][0-9]*|manual)$'; then
+    # YAML allows the same scalar quoted: manual, "manual" and 'manual' are one value.
+    elif [ "$key" = audit_every ] && ! printf '%s' "$val" | sed -E "s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/" | grep -Eq '^([1-9][0-9]*|manual)$'; then
       problems+=("project.yaml: 'audit_every' must be a whole number of jobs or manual, not '$val'")
     fi
   done

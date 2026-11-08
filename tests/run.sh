@@ -212,15 +212,17 @@ setup
 "$F" init "$P" >/dev/null; fill
 grep -q 'id: owner' "$RIG" && grep -q 'to: checker' "$RIG" && [ "$(grep -c '^      - id:' "$RIG")" = 2 ] \
   && ok "plain init is exactly two seats: owner and checker" || bad "two seats" "$(grep -n 'id:' "$RIG")"
-for v in 0 five -3 "5 jobs"; do
+for v in 0 five -3 "5 jobs" 2.5 '"0"' "'manual" '""'; do
   sed -i "s/^audit_every:.*/audit_every: $v/" "$P/.foreman/project.yaml"
   out="$("$F" check "$P" 2>&1)"; rc=$?
   [ $rc -ne 0 ] && echo "$out" | grep -q "'audit_every' must be a whole number of jobs or manual" \
     && ok "check rejects audit_every: $v" || bad "audit_every $v" "$out"
 done
-sed -i "s/^audit_every:.*/audit_every: manual/" "$P/.foreman/project.yaml"
-out="$("$F" check "$P" 2>&1)"; rc=$?
-[ $rc -eq 0 ] && ok "audit_every: manual passes check" || bad "audit_every manual" "$out"
+for v in manual '"manual"' "'manual'" 7 '"7"'; do
+  sed -i "s/^audit_every:.*/audit_every: $v/" "$P/.foreman/project.yaml"
+  out="$("$F" check "$P" 2>&1)"; rc=$?
+  [ $rc -eq 0 ] && ok "audit_every: $v passes check" || bad "audit_every $v" "$out"
+done
 sed -i "/^audit_every:/d" "$P/.foreman/project.yaml"
 out="$("$F" check "$P" 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -q "'audit_every' is missing" && ok "a 1.x project.yaml without audit_every is told what to add" || bad "audit_every missing" "$out"

@@ -34,7 +34,7 @@ change fast.
 | Seat | What it needs | Spend | What we ran, and what we saw |
 |---|---|---|---|
 | **owner** | The strongest coder you can afford, with a long context: it reads the area, plans, builds, keeps the ledger. Follows the role's rules without improvising around them. | Highest | `claude-code` Opus 5.5. Eleven jobs on a real app; found defects two audits had missed. Weak spot: concurrency and silent fallbacks, which is why the checker matters. |
-| **checker** | A **different family from the owner**, strong at systems and security, willing to write probe scripts and drive real handlers against a real local database. Calibrated: zero noise matters more than volume. | High | `codex` GPT-6 Astra. 19 check rounds over 11 jobs: caught 4 HIGH and 6 MED defects, every one real, no noise. In an earlier planted-bug bake-off it had the best severity calls. |
+| **checker** | A **different family from the owner**, strong at systems and security, willing to write probe scripts and drive real handlers against a real local database. Calibrated: zero noise matters more than volume. | High | `codex` GPT-6 Astra. 19 check rounds over 11 jobs: 4 HIGH and 6 MED defects in the owner's code (counted once each; findings the checker later moved out of a job's scope are not counted), and none of them turned out to be false alarms. In an earlier planted-bug bake-off it had the best severity calls. |
 | **auditor** *(optional)* | Broad judgement and a **third family** if you can. Rarely runs, so it can be expensive. | High, rarely | `pi` Gemini 4 Argon via OpenRouter (as the Foreman 1 muse; smoke-tested). |
 
 ## Example crews
