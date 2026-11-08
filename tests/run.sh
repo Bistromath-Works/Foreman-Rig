@@ -80,7 +80,7 @@ teardown
 setup
 "$F" init "$P" >/dev/null
 out="$("$F" check "$P" 2>&1)"; rc=$?
-[ $rc -ne 0 ] && echo "$out" | grep -q 'seat architect: runtime=SET-ME model=SET-ME' && echo "$out" | grep -q "'verify_cmd' is still SET-ME" \
+[ $rc -ne 0 ] && echo "$out" | grep -q 'seat owner: runtime=SET-ME model=SET-ME' && echo "$out" | grep -q "'verify_cmd' is still SET-ME" \
   && ok "check refuses and names every blank seat and project field" || bad "check blanks" "$out"
 [ ! -f "$T/rig.calls" ] && ok "check does not reach OpenRig while blanks remain" || bad "rig called early"
 teardown
@@ -102,30 +102,30 @@ teardown
 
 setup
 "$F" init "$P" >/dev/null
-! grep -q 'muse' <(grep -v '^#' "$RIG") && ok "init leaves the muse out by default, seat and edge" || bad "default no muse" "$(grep -n muse "$RIG")"
-grep -q 'id: punchlist' "$RIG" && grep -q 'to: punchlist' "$RIG" && ok "init without the muse keeps the other seats" || bad "no-muse removed too much"
+! grep -q 'auditor' <(grep -v '^#' "$RIG") && ok "init leaves the auditor out by default, seat and edge" || bad "default no auditor" "$(grep -n auditor "$RIG")"
+grep -q 'id: checker' "$RIG" && grep -q 'to: checker' "$RIG" && ok "init without the auditor keeps the other seats" || bad "no-auditor removed too much"
 teardown
 
 setup
-"$F" init "$P" --muse >/dev/null
-grep -q 'id: muse' "$RIG" && grep -q 'to: muse' "$RIG" && ok "init --muse keeps the muse seat and its edge" || bad "--muse" "$(grep -n muse "$RIG")"
+"$F" init "$P" --auditor >/dev/null
+grep -q 'id: auditor' "$RIG" && grep -q 'to: auditor' "$RIG" && ok "init --auditor keeps the auditor seat and its edge" || bad "--auditor" "$(grep -n auditor "$RIG")"
 teardown
 
 setup
-"$F" init "$P" >/dev/null; fill builder=nonsense:x
+"$F" init "$P" >/dev/null; fill checker=nonsense:x
 out="$("$F" check "$P" 2>&1)"; rc=$?
-[ $rc -ne 0 ] && echo "$out" | grep -q "seat builder: runtime 'nonsense'" && ok "check rejects an unknown runtime" || bad "unknown runtime" "$out"
+[ $rc -ne 0 ] && echo "$out" | grep -q "seat checker: runtime 'nonsense'" && ok "check rejects an unknown runtime" || bad "unknown runtime" "$out"
 teardown
 
 setup
-"$F" init "$P" >/dev/null; fill inspector=codex:gpt-6-astra
+"$F" init "$P" >/dev/null; fill owner=codex:gpt-6-astra
 rm "$T/bin/codex"
 out="$("$F" check "$P" 2>&1)"; rc=$?
-[ $rc -ne 0 ] && echo "$out" | grep -q "seat inspector uses runtime 'codex'" && ok "check rejects a runtime that is not installed" || bad "missing runtime" "$out"
+[ $rc -ne 0 ] && echo "$out" | grep -q "seat owner uses runtime 'codex'" && ok "check rejects a runtime that is not installed" || bad "missing runtime" "$out"
 teardown
 
 setup
-"$F" init "$P" --muse >/dev/null; fill muse=pi:openrouter/google/gemini-4-argon
+"$F" init "$P" --auditor >/dev/null; fill auditor=pi:openrouter/google/gemini-4-argon
 out="$("$F" check "$P" 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -q 'provider_auth_env_allowlist OPENROUTER_API_KEY' && ok "check requires the OpenRouter key allowlist" || bad "openrouter allowlist" "$out"
 echo '["OPENROUTER_API_KEY"]' > "$T/allowlist"
@@ -134,12 +134,12 @@ out="$("$F" check "$P" 2>&1)"; rc=$?
 teardown
 
 setup
-"$F" init "$P" >/dev/null; fill builder=pi:ollama/glm-5.3:cloud
+"$F" init "$P" >/dev/null; fill checker=pi:ollama/glm-5.3:cloud
 out="$("$F" check "$P" 2>&1)"; rc=$?
 [ $rc -eq 0 ] && echo "$out" | grep -q 'no .*models.json; fine only if Pi has it built in' && ok "check warns (not refuses) when a non-OpenRouter pi seat has no models.json" || bad "models.json missing" "$out"
 mkdir -p "$HOME/.pi/agent" && echo '{}' > "$HOME/.pi/agent/models.json"
 out="$("$F" up "$P" 2>&1)"; rc=$?
-link="$OPENRIG_HOME/state/pi/crew-builder@foreman-my-app/agent/models.json"
+link="$OPENRIG_HOME/state/pi/crew-checker@foreman-my-app/agent/models.json"
 [ $rc -eq 0 ] && [ -L "$link" ] && [ "$(readlink "$link")" = "$HOME/.pi/agent/models.json" ] \
   && ok "up links models.json into each pi seat before launch" || bad "seed models.json" "$out"
 grep -q "^up $RIG --cwd $P\$" "$T/rig.calls" && ok "up launches the project's rig file with --cwd" || bad "up call" "$(cat "$T/rig.calls")"
@@ -169,10 +169,10 @@ teardown
 
 
 setup
-"$F" init "$P" >/dev/null; fill lead=SET-ME:SET-ME
+"$F" init "$P" >/dev/null; fill owner=SET-ME:SET-ME
 sed -i 's/^verify_cmd: none/verify_cmd: SET-ME/' "$P/.foreman/project.yaml"
 out="$("$F" check "$P" 2>&1)"; rc=$?
-[ $rc -ne 0 ] && echo "$out" | grep -q 'seat lead' && echo "$out" | grep -q "'verify_cmd' is still SET-ME" && echo "$out" | grep -q 'fill in every SET-ME' \
+[ $rc -ne 0 ] && echo "$out" | grep -q 'seat owner' && echo "$out" | grep -q "'verify_cmd' is still SET-ME" && echo "$out" | grep -q 'fill in every SET-ME' \
   && ok "check reports every problem when only some seats are filled" || bad "partial fill" "$out"
 teardown
 
@@ -180,9 +180,9 @@ setup
 "$F" init "$P" >/dev/null; fill
 sed -i '/^verify_cmd:/d' "$P/.foreman/project.yaml"
 sed -i 's/^base_branch: none/base_branch:   # set me/' "$P/.foreman/project.yaml"
-awk '/- id: builder/{b=1} b && /model:/{sub(/model: .*/,"model: \"\""); b=0} {print}' "$RIG" > "$RIG.n" && mv "$RIG.n" "$RIG"
+awk '/- id: checker/{b=1} b && /model:/{sub(/model: .*/,"model: \"\""); b=0} {print}' "$RIG" > "$RIG.n" && mv "$RIG.n" "$RIG"
 out="$("$F" check "$P" 2>&1)"; rc=$?
-[ $rc -ne 0 ] && echo "$out" | grep -q "'verify_cmd' is missing" && echo "$out" | grep -q "'base_branch' has no value" && echo "$out" | grep -q 'seat builder: runtime=claude-code model=-' \
+[ $rc -ne 0 ] && echo "$out" | grep -q "'verify_cmd' is missing" && echo "$out" | grep -q "'base_branch' has no value" && echo "$out" | grep -q 'seat checker: runtime=claude-code model=-' \
   && ok "check refuses missing keys, empty values and empty models, not just SET-ME" || bad "missing/empty" "$out"
 teardown
 
@@ -195,17 +195,37 @@ teardown
 
 setup
 "$F" init "$P" >/dev/null; fill
-awk '/--- muse/{skip=1} !skip{print} /--- end muse/{skip=0}' "$RIG" | grep -v 'id: punchlist' > "$RIG.n"; mv "$RIG.n" "$RIG"
+awk '/--- auditor/{skip=1} !skip{print} /--- end auditor/{skip=0}' "$RIG" | grep -v 'id: checker' > "$RIG.n"; mv "$RIG.n" "$RIG"
 out="$("$F" check "$P" 2>&1)"; rc=$?
-[ $rc -ne 0 ] && echo "$out" | grep -q "seat 'punchlist' is missing" && ok "check refuses a rig file missing a required seat" || bad "missing seat" "$out"
+[ $rc -ne 0 ] && echo "$out" | grep -q "seat 'checker' is missing" && ok "check refuses a rig file missing a required seat" || bad "missing seat" "$out"
 teardown
 
 setup
 "$F" init "$P" >/dev/null; fill
 out="$("$F" check "$P" 2>&1)"; rc=$?
-[ $rc -eq 0 ] && ok "a crew without the muse passes check" || bad "no-muse check" "$out"
-out="$("$F" init "$P" --muse 2>&1)"
-echo "$out" | grep -q 'muse ignored' && ok "init --muse on an existing file says it was ignored" || bad "muse existing" "$out"
+[ $rc -eq 0 ] && ok "a crew without the auditor passes check" || bad "no-auditor check" "$out"
+out="$("$F" init "$P" --auditor 2>&1)"
+echo "$out" | grep -q 'auditor ignored' && ok "init --auditor on an existing file says it was ignored" || bad "auditor existing" "$out"
+teardown
+
+setup
+"$F" init "$P" >/dev/null; fill
+grep -q 'id: owner' "$RIG" && grep -q 'to: checker' "$RIG" && [ "$(grep -c '^      - id:' "$RIG")" = 2 ] \
+  && ok "plain init is exactly two seats: owner and checker" || bad "two seats" "$(grep -n 'id:' "$RIG")"
+for v in 0 five -3 "5 jobs" 2.5 '"0"' "'manual" '""'; do
+  sed -i "s/^audit_every:.*/audit_every: $v/" "$P/.foreman/project.yaml"
+  out="$("$F" check "$P" 2>&1)"; rc=$?
+  [ $rc -ne 0 ] && echo "$out" | grep -q "'audit_every' must be a whole number of jobs or manual" \
+    && ok "check rejects audit_every: $v" || bad "audit_every $v" "$out"
+done
+for v in manual '"manual"' "'manual'" 7 '"7"'; do
+  sed -i "s/^audit_every:.*/audit_every: $v/" "$P/.foreman/project.yaml"
+  out="$("$F" check "$P" 2>&1)"; rc=$?
+  [ $rc -eq 0 ] && ok "audit_every: $v passes check" || bad "audit_every $v" "$out"
+done
+sed -i "/^audit_every:/d" "$P/.foreman/project.yaml"
+out="$("$F" check "$P" 2>&1)"; rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -q "'audit_every' is missing" && ok "a 1.x project.yaml without audit_every is told what to add" || bad "audit_every missing" "$out"
 teardown
 
 setup
@@ -221,7 +241,7 @@ out="$("$F" check "$P" 2>&1)"; rc=$?
 teardown
 
 setup
-"$F" init "$P" --muse >/dev/null; fill muse=pi:openrouter/google/gemini-4-argon
+"$F" init "$P" --auditor >/dev/null; fill auditor=pi:openrouter/google/gemini-4-argon
 echo 'SOME_OTHER_KEY' > "$T/allowlist"
 out="$("$F" check "$P" 2>&1)"; rc=$?
 echo "$out" | grep -q 'allowlist SOME_OTHER_KEY,OPENROUTER_API_KEY' && ok "allowlist advice keeps keys already on the list" || bad "allowlist append" "$out"
@@ -239,9 +259,9 @@ kill $nokey $haskey 2>/dev/null; wait 2>/dev/null
 teardown
 
 setup
-"$F" init "$P" >/dev/null; fill builder=pi:ollama/glm-5.3:cloud
+"$F" init "$P" >/dev/null; fill checker=pi:ollama/glm-5.3:cloud
 mkdir -p "$HOME/.pi/agent" && echo '{}' > "$HOME/.pi/agent/models.json"
-link="$OPENRIG_HOME/state/pi/crew-builder@foreman-my-app/agent/models.json"
+link="$OPENRIG_HOME/state/pi/crew-checker@foreman-my-app/agent/models.json"
 mkdir -p "$(dirname "$link")" && ln -s "$T/gone.json" "$link"
 out="$("$F" up "$P" 2>&1)"; rc=$?
 [ $rc -eq 0 ] && [ "$(readlink "$link")" = "$HOME/.pi/agent/models.json" ] && ok "up replaces a dangling models.json link" || bad "dangling link" "$out"
@@ -285,21 +305,21 @@ out="$(env $LF "$F" tracing "$P" 2>&1)"; rc=$?
 teardown
 
 setup
-"$F" init "$P" >/dev/null; fill builder=pi:openrouter/qwen/qwen3-coder-next inspector=codex:gpt-6-astra
+"$F" init "$P" --auditor >/dev/null; fill auditor=pi:openrouter/google/gemini-4-argon checker=codex:gpt-6-astra
 touch "$T/claude.plugin"; mkdir -p "$HOME/.codex"; printf '[plugins."tracing@codex-observability-plugin"]\nenabled = true\n' > "$HOME/.codex/config.toml"
 mkdir -p "$P/.claude" && echo '{"permissions":{"allow":["Bash(rig queue *)"]},"env":{"KEEP":"1"}}' > "$P/.claude/settings.local.json"
 out="$(env $LF "$F" tracing "$P" 2>&1)"; rc=$?
-cs="$P/.claude/settings.local.json"; cx="$P/.codex/langfuse.json"; pj="$OPENRIG_HOME/state/pi/crew-builder@foreman-my-app/agent/langfuse.json"
+cs="$P/.claude/settings.local.json"; cx="$P/.codex/langfuse.json"; pj="$OPENRIG_HOME/state/pi/crew-auditor@foreman-my-app/agent/langfuse.json"
 [ $rc -eq 0 ] && node -e '
   const fs = require("fs"), [cs, cx, pj] = process.argv.slice(1).map(f => JSON.parse(fs.readFileSync(f, "utf8")));
   const good = cs.env.LANGFUSE_SECRET_KEY === "sk-test" && cs.env.CC_LANGFUSE_TRACE_TAGS === "foreman-my-app" && cs.env.KEEP === "1"
     && cs.permissions.allow.length === 1 && cx.enabled === true && cx.secret_key === "sk-test" && cx.base_url === "https://lf.example"
-    && pj.secretKey === "sk-test" && pj.userId === "crew-builder@foreman-my-app" && pj.environment === "foreman-my-app";
+    && pj.secretKey === "sk-test" && pj.userId === "crew-auditor@foreman-my-app" && pj.environment === "foreman-my-app";
   process.exit(good ? 0 : 1)' "$cs" "$cx" "$pj" \
   && ok "tracing writes keys for claude, codex and each pi seat, keeping other settings" || bad "tracing on" "$out"
 [ "$(stat -c %a "$cs" "$cx" "$pj" | sort -u)" = 600 ] && ok "tracing files holding keys are private (600)" || bad "perms" "$(stat -c '%a %n' "$cs" "$cx" "$pj")"
 [ -z "$(git -C "$P" status --porcelain)" ] && ok "tracing leaves the project tree clean" || bad "tracing dirty" "$(git -C "$P" status --porcelain)"
-grep -q 'crew-builder@foreman-my-app' "$T/pi.installs" && [ "$(wc -l < "$T/pi.installs")" = 1 ] \
+grep -q 'crew-auditor@foreman-my-app' "$T/pi.installs" && [ "$(wc -l < "$T/pi.installs")" = 1 ] \
   && ok "tracing installs the Pi plugin into the pi seat's own dir only" || bad "pi install" "$(cat "$T/pi.installs" 2>&1)"
 env $LF "$F" tracing "$P" >/dev/null 2>&1
 [ "$(wc -l < "$T/pi.installs")" = 1 ] && ok "tracing twice does not reinstall the Pi plugin" || bad "pi reinstall"

@@ -1,71 +1,59 @@
 # Foreman
 
-### Or: How to Get Eight Artificial Minds to Build Something Without Arguing About It Forever
+### Or: How to Get Two Artificial Minds to Build Something Without Diffusing the Blame
 
 > **Foreman is an [OpenRig](https://www.openrig.dev) setup, not a skill.** There is nothing to
-> install into Claude Code or Codex. You launch it with OpenRig as a team of seven agents (eight
-> with the optional Muse), each in its own terminal, pointed at your own git repository, with
-> optional [Langfuse](https://langfuse.com) tracing so you can see what every one of them did.
+> install into Claude Code or Codex. You launch it with OpenRig as two agents (three with the
+> optional auditor), each in its own terminal, pointed at your own git repository, with optional
+> [Langfuse](https://langfuse.com) tracing so you can see what each of them did.
 
-It is a well-established fact that a single AI coding agent, left to its own devices, will
-produce code that works. It will also produce code that is structured in a way that makes
-perfect sense to it and absolutely no sense to anyone who has to maintain it six months later,
-including, somewhat ironically, itself.
+Foreman 1 put seven agents on a job site: a lead who never touched the work, an architect who
+planned it, a cheap builder who built it, and four more seats to catch what the builder got
+wrong. Every seat did its job. Nobody owned the result. Code piled up that nothing removed,
+numbers appeared that nobody could source, and the problems that grew *between* jobs were
+nobody's job at all.
 
-It is a less well-established but equally true fact that if you give *two* AI coding agents the
-ability to talk to each other, they will immediately begin disagreeing about architecture and
-never stop.
-
-Foreman solves this by doing something remarkably similar to what humans have done on
-construction sites for thousands of years: putting one person in charge, giving everyone else a
-job title that tells them to stay in their lane, and making sure nobody pours concrete until the
-owner has signed the plan.
+Foreman 2 keeps the part that worked (a strong, independent checker that runs the real code and
+tries to break it) and gives everything else to one seat that owns the whole repository.
 
 ## The crew
 
-| Seat | Job | What they emphatically do not do |
+| Seat | Job | What it emphatically does not do |
 |---|---|---|
-| **Lead** | Runs the job, hands out work one seat at a time, talks to you | Write code, ever, under any circumstances |
-| **Architect** | Reads the codebase and writes a plan a cheaper model can build from | Touch source code |
-| **Dissenter** | Tries, honestly, to break the plan before anyone builds it | Say "looks good" |
-| **Builder** | Builds the approved plan, tests first | Argue about architecture (that ship has sailed) |
-| **Reviewer** | Reviews each build round by running things, not by reading and nodding | Fix what it finds |
-| **Inspector** | Attacks the finished branch as a whole: seams, security, false confidence | Rubber-stamp anything |
-| **Punch List** | Re-runs every check and decides ship or no-ship | Care how hard everyone worked |
-| **Muse** *(optional, off by default)* | A senior solutions architect on call when the crew is stuck | Decide anything |
+| **Owner** | Owns the repo. Plans, removes before adding, builds test-first, writes the checker a numbered list of promises, merges, talks to you | Approve its own work |
+| **Checker** | Runs the real code against your real local services and tries to break each promise: races, silent fallbacks, bad input, half-finished retries. Also challenges the plan on big jobs | Fix what it finds |
+| **Auditor** *(optional)* | Audits the whole repo every few jobs (dead code, duplicates, unsourced numbers, drift), and gives fresh eyes when a job is stuck | Decide anything |
+
+**You are asked about three things only: big decisions, serious failures, and domain-specific
+knowledge.** A fee schedule, a legal rule, how your business actually works: the owner asks
+rather than guesses. Everything else it decides and tells you what it decided.
 
 **You choose which model sits in each seat.** Foreman works with any model Claude Code, Codex or
-[Pi](https://github.com/earendil-works/pi) can run, which is to say nearly all of them: Anthropic,
-OpenAI, anything on OpenRouter, local models through Ollama or vLLM. It ships with every model
-blank, because the best crew is the one you can actually pay for.
-[docs/models.md](docs/models.md) says what each seat needs, what we ran in it and what we saw,
-and shows example crews for one subscription, mixed families, or a single OpenRouter key.
+[Pi](https://github.com/earendil-works/pi) can run. It ships with every model blank.
+[docs/models.md](docs/models.md) says what each seat needs and what we ran.
 
 ## How a job runs
 
 ```
-you: "build X"  →  Architect plans  →  Dissenter challenges (2 rounds max)
-                →  GATE 1: you approve the plan
-                →  Builder builds  →  Reviewer reviews (2 rounds max)
-                →  verify command must pass
-                →  Inspector audits (2 rounds max)  →  Punch List: ship / no-ship
-                →  GATE 3: you approve the merge  →  merged locally into your base branch
+you: "build X"  →  owner reads the area, lists what to remove, plans
+                →  (big jobs) checker tries to break the plan
+                →  owner builds, test-first, verify command green
+                →  owner writes numbered promises  →  checker: PASS or BLOCK
+                →  BLOCK: fix, re-check (after a 3rd BLOCK: redesign, not patch)
+                →  PASS: owner merges locally, re-runs verify on the base branch
+                →  owner reports: what shipped, what was caught, net lines, your steps
 ```
 
-- **You approve twice**: the plan, and the merge. Nothing merges on silence.
-- **Every loop is capped.** When a cap is hit, the lead asks you instead of letting two models
-  argue until the heat death of the universe.
-- **When the crew is stuck**, the lead asks you, or, if you added one, calls the Muse: if the Architect can't find an approach it
-  would defend, or a review loop runs out of rounds. The Muse comes back with two or three
-  genuinely different approaches and a pick. It advises; the Architect or you decide.
-- **Nothing is pushed or deployed.** The crew is instructed never to push, add remotes or deploy
-  (see the safety rails in [docs/how-it-works.md](docs/how-it-works.md)); the job ends with a local
-  merge you approved, and shipping it anywhere is your call. Your code is, of course, sent to the
-  model providers you choose for the seats.
-- **Everything is written down** in `.foreman/jobs/<job-id>/` in your project: the spec, the plan,
-  every verdict, every decision. It's kept out of git, so your history stays yours.
+- **Nothing merges without the checker's PASS.** HIGH and MED findings block; LOW is advice.
+- **Outside facts carry their source.** A rate or fee the code uses gets a comment naming where
+  it came from and a test that pins it. No source: the owner asks you.
+- **Nothing is pushed or deployed without you.** The job ends with a local merge. The owner
+  pushes only when you say so, and only after any database migration the change needs is live.
+- **Everything is written down** in `.foreman/jobs/<job-id>/`: the spec, every brief, every
+  verdict, every decision, and a `RESUME.md` a fresh session can pick the job up from.
 
-More detail: [docs/how-it-works.md](docs/how-it-works.md).
+More detail: [docs/how-it-works.md](docs/how-it-works.md). Why it changed:
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Setting it up
 
@@ -91,21 +79,21 @@ or [Pi](https://github.com/earendil-works/pi), logged in.
 git clone https://github.com/Bistromath-Works/Foreman-Rig ~/foreman
 cd ~/foreman
 
-scripts/foreman init ~/code/my-app            # add --muse for the optional eighth seat
+scripts/foreman init ~/code/my-app            # add --auditor for the optional third seat
 # fill in every SET-ME in the two files it names: rig.my-app.yaml and ~/code/my-app/.foreman/project.yaml
 scripts/foreman check ~/code/my-app           # refuses until nothing is SET-ME, then validates with OpenRig
 scripts/foreman tracing ~/code/my-app         # optional: Langfuse tracing (keys from env, see below)
 scripts/foreman up ~/code/my-app              # launch the crew
-tmux attach -t crew-lead@foreman-my-app       # talk to the lead (Ctrl-b d to leave)
+tmux attach -t crew-owner@foreman-my-app      # talk to the owner (Ctrl-b d to leave)
 scripts/foreman down ~/code/my-app            # stop the crew
 ```
 
-Then tell the lead what to build: a path to a spec file, or a plain description. SETUP.md has
+Then tell the owner what to build: a path to a spec file, or a plain description. SETUP.md has
 the full walkthrough, and [docs/troubleshooting.md](docs/troubleshooting.md) has the known snags.
 
 ## Seeing what the crew did
 
-Seven agents produce a lot of conversation. Turn on [Langfuse](https://langfuse.com) tracing
+Turn on [Langfuse](https://langfuse.com) tracing
 and every seat's model calls, tool calls, tokens and cost land in one place, tagged by crew and
 seat. Langfuse Cloud or your own self-hosted Langfuse both work.
 
@@ -124,7 +112,7 @@ It is scoped to that one crew, the keys go only into private files git ignores, 
 - `bash tests/run.sh` tests the setup script against stub commands: seconds, no models, no keys.
   CI runs it on every push.
 - `examples/smoke/` is a tiny project with a spec and failing acceptance tests. Point a new
-  crew at it to prove the whole pipeline works with your models before you trust it with your
+  crew at it to prove the whole flow works with your models before you trust it with your
   own code. [docs/testing.md](docs/testing.md) has the steps and what a pass looks like.
 
 ## Security, briefly
@@ -145,8 +133,8 @@ It is scoped to that one crew, the keys go only into private files git ignores, 
 ```
 README.md               you are here
 SETUP.md                setup instructions written for an AI agent to follow
-rig.template.yaml       the crew: 7 seats + the optional muse, every runtime and model SET-ME
-project.template.yaml   per-project settings: base branch, verify command, protected paths, banned commands
+rig.template.yaml       the crew: owner, checker and the optional auditor, every runtime and model SET-ME
+project.template.yaml   per-project settings: base branch, verify command, protected paths, banned commands, audit cadence
 CULTURE.md              rules every seat follows
 agents/<seat>/          each seat's role prompt and OpenRig manifest
 agents/shared/          OpenRig's shared seat resources (vendored, Apache-2.0)
@@ -161,12 +149,11 @@ Your filled-in `rig.<project>.yaml` files are gitignored; they never leave your 
 
 ## Limits, honestly stated
 
-- **One job at a time, one checkout.** The crew shares your working tree and takes turns. No
-  parallel builders.
+- **One job at a time, one checkout.** The crew shares your working tree and takes turns.
 - **One machine.** All seats run where OpenRig runs.
 - **Tested on Linux.** It should work on macOS; it has not been tested there yet.
 - **Your verify command is the floor.** The crew can only be as sure as the command that proves
-  your project works. If you don't have one, the Builder writes tests first, but a real test
+  your project works. If you don't have one, the owner writes tests first, but a real test
   suite beats an improvised one.
 
 ## Earlier versions
@@ -189,4 +176,4 @@ you build something terrible, we would prefer not to know, but we acknowledge yo
 wrong is that when a thing that cannot possibly go wrong goes wrong it usually turns out to be
 impossible to get at or repair."*
 
-Keep your agents talking. Keep your Dissenter dissenting. Keep your traces where you can read them.
+Keep one agent owning it. Keep the other one trying to break it. Keep your traces where you can read them.

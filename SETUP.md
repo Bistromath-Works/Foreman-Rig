@@ -1,9 +1,8 @@
 # Setting up Foreman (instructions for the AI agent doing the setup)
 
 You are a coding agent (Claude Code, Codex or similar) helping a person set up Foreman for one of
-their git repositories. Foreman is an **OpenRig setup**: a team of seven agent seats (eight with the
-optional Muse) that OpenRig
-launches in separate terminals. It is not a skill and nothing gets installed into your own runtime.
+their git repositories. Foreman is an **OpenRig setup**: two agent seats, an owner and a checker
+(three with the optional auditor), that OpenRig launches in separate terminals. It is not a skill and nothing gets installed into your own runtime.
 
 The person may not be comfortable in a terminal. You run the commands; they make the decisions.
 
@@ -49,13 +48,14 @@ uncommitted changes, ask the person to commit or stash them first; the crew need
 
 ## 2. Create the files
 
-Ask: **"Do you want the optional Muse seat?"** (default: no). Explain in one line: a senior
-solutions architect the lead calls only when the crew is stuck; it should be your strongest
-model from a different family than your Architect, and it costs little because it is rarely
-called. Without it, the lead brings stuck problems to the person instead.
+Ask: **"Do you want the optional auditor seat?"** (default: no). Explain in one line: it audits
+the whole repo every few jobs (dead code, duplicates, unsourced numbers, drift) and gives fresh
+eyes when a job is stuck; it should be a different model family from the other two, and it
+costs little because it runs rarely. Without it, audits happen only when the person asks, and
+stuck jobs come to the person.
 
 ```bash
-"$FOREMAN/scripts/foreman" init "$PROJECT"            # add --muse if they want it
+"$FOREMAN/scripts/foreman" init "$PROJECT"            # add --auditor if they want it
 ```
 
 This writes `FOREMAN/rig.<name>.yaml` (the crew) and `PROJECT/.foreman/project.yaml` (project
@@ -67,10 +67,9 @@ Read `FOREMAN/docs/models.md` first. Then ask which of these the person can use:
 an Anthropic subscription (Claude Code), an OpenAI subscription (Codex), an OpenRouter key,
 Ollama (local or cloud), another OpenAI-compatible endpoint.
 
-Propose one `runtime` + `model` per seat as a table, following models.md: spend on the Architect
-and save on the Builder, and mix model families across the checking seats: the Dissenter
-differs from the Architect, the Reviewer and Inspector differ from the Builder, and the Muse
-differs from the Architect.
+Propose one `runtime` + `model` per seat as a table, following models.md: the strongest coder
+you can afford on the owner, a different model family on the checker, and a third family on
+the auditor if there is one.
 
 Check every model id before writing it:
 - **OpenRouter:** `curl -s https://openrouter.ai/api/v1/models` lists every id (no key needed).
@@ -95,7 +94,8 @@ default branch (`git -C "$PROJECT" symbolic-ref --short HEAD`).
 | `base_branch` | The branch jobs start from and merge back into, usually `main` |
 | `preflight_cmd` | A safety check script if the repo has one, otherwise `none` |
 | `verify_cmd` | The single command CI would run: tests, then typecheck/lint/build if they exist, joined with `&&`. It must exit 0 on a healthy tree and must not leave a server running |
-| `acceptance_tests` | A folder of pre-written tests the builder must pass but never edit, or `none` |
+| `acceptance_tests` | A folder of pre-written tests the owner must pass but never edit, or `none` |
+| `audit_every` | With the auditor: merged jobs between whole-repo audits (default `5`), or `manual` |
 | `protected_paths` | Paths no seat may edit (safety scripts, CI config, vendored code), or `[]` |
 | `banned_cmds` | Anything that reaches outside the repo: deploy CLIs, production database tools, infra tools. `[]` if none |
 
@@ -104,7 +104,7 @@ qualifiers work: `"supabase/migrations/ (existing files only; adding new migrati
 or `"anything with --project-ref"`. Say so to the person, and say plainly that these are
 instructions to the models, not a sandbox.
 
-**Running `verify_cmd` once.** The crew runs it at every job's Gate 2, so it has to pass now.
+**Running `verify_cmd` once.** The owner runs it before every check and again after every merge, so it has to pass now.
 Before running it, read what it does and tell the person if it is destructive or needs services
 (for example, it resets a local database, or needs Docker running). Ask before running anything
 destructive. If it fails on the current tree, stop and tell them: the crew cannot prove anything
@@ -171,7 +171,7 @@ whatever it reports and run it again until it says `check passed`.
 
 ## 7. Launch
 
-Ask: **"Ready to launch the crew? Seven agents (eight with the Muse) will start in the background."** Then:
+Ask: **"Ready to launch the crew? Two agents (three with the auditor) will start in the background."** Then:
 
 ```bash
 "$FOREMAN/scripts/foreman" up "$PROJECT"
@@ -181,25 +181,26 @@ Ask: **"Ready to launch the crew? Seven agents (eight with the Muse) will start 
 
 Tell them, plainly:
 
-1. **Open the lead** to talk to it: `tmux attach -t crew-lead@foreman-<name>` (press `Ctrl-b`
+1. **Open the owner** to talk to it: `tmux attach -t crew-owner@foreman-<name>` (press `Ctrl-b`
    then `d` to leave without stopping it), or run `rig tui` to see every seat.
 2. **Permission mode for Claude seats.** Claude seats start in "accept edits" mode and will stop
    to ask before running commands. For an unattended crew, switch each Claude seat to auto mode
    in its pane (`Shift+Tab` until the footer shows auto mode), or be ready to approve prompts.
 3. **If a seat asks whether to start fresh, answer `y`.** Enter alone means No.
 4. **Approve any hook or folder-trust prompt** a seat shows on first start.
-5. **Start a job** by telling the lead what to build: a path to a spec file, or a plain
-   description (the lead writes it up and asks them to confirm). The lead will stop twice for
-   their approval: the plan (Gate 1) and the merge (Gate 3).
+5. **Start a job** by telling the owner what to build: a path to a spec file, or a plain
+   description (the owner writes it up and asks them to confirm once). After that it asks only
+   about big decisions, serious failures and domain knowledge, and tells them when a push or a
+   migration is theirs to do.
 6. **Prove it works** before a real job, if they have 20 minutes: the smoke test in
-   `FOREMAN/docs/testing.md` runs the whole pipeline on a tiny throwaway project.
+   `FOREMAN/docs/testing.md` runs a whole job on a tiny throwaway project.
 7. **Stop the crew** when done: `scripts/foreman down "$PROJECT"` (or ask you to).
 
 ## 9. Report
 
 Finish with a short summary: the crew table (seat, runtime, model), the project settings you
 wrote, whether tracing is on and where it goes, anything you could not check (for example, whether a login is valid), and the one
-command to open the lead.
+command to open the owner.
 
 If something fails that this file doesn't cover, read `FOREMAN/docs/troubleshooting.md` before
 improvising.

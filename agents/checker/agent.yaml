@@ -1,6 +1,6 @@
-name: foreman-dissenter
-version: "2.0"
-description: "Foreman Dissenter - tries to break the plan before anyone builds"
+name: foreman-checker
+version: "3.0"
+description: "Foreman checker - independent gate: runs the real code and tries to break it; never edits app code"
 
 imports:
   - ref: local:../shared
@@ -8,7 +8,7 @@ imports:
 profiles:
   default:
     uses:
-      skills: [verification-before-completion]
+      skills: [systematic-debugging, verification-before-completion]
       guidance: []
       subagents: []
       plugins: [shared:openrig-core]

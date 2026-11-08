@@ -42,6 +42,7 @@ verify_cmd: node --test
 acceptance_tests: test/acceptance
 protected_paths: []
 banned_cmds: []
+audit_every: manual
 ```
 
 Then:
@@ -50,26 +51,29 @@ Then:
 scripts/foreman check ~/smoke-test
 scripts/foreman tracing ~/smoke-test      # optional, see observability.md
 scripts/foreman up ~/smoke-test
-tmux attach -t crew-lead@foreman-smoke-test
+tmux attach -t crew-owner@foreman-smoke-test
 ```
 
-Tell the lead: `build the job in SPEC.md`.
+Tell the owner: `build the job in SPEC.md`.
 
 **What a pass looks like:**
 
-- The lead writes the job up, and every seat takes a turn in order: architect, dissenter,
-  Gate 1 (you type `yes`), builder, reviewer, verify, inspector, punch list, Gate 3.
-- After you approve Gate 3, `main` has a merge commit, `node --test` passes, and
-  `test/acceptance/` is unchanged (`git diff HEAD~1 -- test/acceptance` is empty).
-- `.foreman/jobs/<job-id>/` holds the spec, plan, every seat's output and a ledger, and none
-  of it is in git.
-- No seat asked you anything except the lead.
+- The owner confirms the job once, builds `src/slugify.js` test-first on a `foreman/<job-id>`
+  branch, writes a numbered brief, and hands it to the checker. The checker writes a verdict;
+  on PASS the owner merges into `main` and runs `node --test` again there.
+- `main` has a merge commit, `node --test` passes, and `test/acceptance/` is unchanged
+  (`git diff HEAD~1 -- test/acceptance` is empty).
+- `.foreman/jobs/<job-id>/` holds `SPEC.md`, the brief, the verdict, `LOG.md` and `RESUME.md`,
+  and none of it is in git.
+- Nobody asked you anything except the owner, and the owner asked at most once (to confirm the
+  job). A slugify job has no big decisions and no domain questions.
 - With tracing on: traces from every seat that worked, tagged `foreman-smoke-test`.
 
 **What a failure tells you:** a seat that never starts is a runtime, login or model-id problem
 ([troubleshooting.md](troubleshooting.md)). A seat that starts but stalls is usually a
-permission prompt nobody answered. A job that finishes but needed you more than twice is a
-model that isn't following its role; try a stronger one in that seat.
+permission prompt nobody answered. A job that needed you more than once is a model that isn't
+following its role; try a stronger one in that seat. A checker PASS on the first round is
+normal for a job this small; a checker that never probes anything is not.
 
 Clean up with `scripts/foreman down ~/smoke-test` and delete the folder and its
 `rig.smoke-test.yaml`.

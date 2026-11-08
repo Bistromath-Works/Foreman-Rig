@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.0 (2026-11-07)
+
+Two seats instead of seven. Built from a real run: a Foreman 1 app audited at 58/100 was fixed
+by an owner and a checker alone over eleven jobs; see docs/how-it-works.md, "Why two seats".
+
+- **Owner** replaces the lead, architect and builder: one seat that plans, removes before
+  adding, builds test-first, merges and talks to the human. It never approves its own work.
+- **Checker** replaces the reviewer, inspector and punch list: an independent gate that runs the
+  real code against real local services and tries to break a numbered list of promises. HIGH
+  and MED block. On big jobs it also checks the plan before code (the dissenter's old job).
+- **Auditor** (optional, `init --auditor`) replaces the muse: a whole-repo audit every
+  `audit_every` merged jobs, and fresh eyes after a third BLOCK on one job.
+- The human is asked only about big decisions, serious failures and domain-specific knowledge.
+  Plan and merge gates are gone; pushes and live-system steps (migrations) stay the human's.
+- New crew rules: outside facts carry their source and a pinning test; model output is
+  validated in code; no push before the migrations a change needs are live; net lines reported
+  per job; `RESUME.md` so a fresh session can continue a job.
+- `project.yaml` gains `audit_every` (a whole number, or `manual`); `check` asks for it.
+- `init --muse` is now `init --auditor`. A 1.x crew can't be resumed: see
+  docs/troubleshooting.md, "Upgrading a 1.x crew".
+
 ## 1.0.1 (2026-10-27)
 
 - Seats now wait for a queue item from the lead. In the first smoke test, three seats built

@@ -4,14 +4,15 @@
 # (gitignored) and sets the name. In that copy, replace every SET-ME:
 #   runtime: claude-code | codex | pi
 #   model:   a model that runtime can run (see docs/models.md)
-# To run without the optional muse, delete the whole muse block (between its marker lines).
+# The auditor is optional: `init --auditor` keeps its block, plain `init` removes it.
 # `scripts/foreman check <project>` refuses to launch while any SET-ME is left.
 
 version: "0.2"
 name: SET-ME
 summary: >
-  Foreman: a gated plan → dissent → build → review → inspect → punch-list pipeline. The lead
-  never writes code; the human approves the plan (Gate 1) and the merge (Gate 3).
+  Foreman: an owner that plans, builds and owns the repo, and an independent checker that runs
+  the code and tries to break it. Nothing merges without the checker's PASS. The human is asked
+  only about big decisions, serious failures and domain knowledge.
 
 culture_file: CULTURE.md
 
@@ -28,63 +29,28 @@ pods:
   - id: crew
     label: Foreman crew
     members:
-      - id: lead
-        agent_ref: "local:agents/lead"
+      - id: owner
+        agent_ref: "local:agents/owner"
         runtime: SET-ME
         model: SET-ME
         profile: default
         cwd: "."
-      - id: architect
-        agent_ref: "local:agents/architect"
+      - id: checker
+        agent_ref: "local:agents/checker"
         runtime: SET-ME
         model: SET-ME
         profile: default
         cwd: "."
-      - id: dissenter
-        agent_ref: "local:agents/dissenter"
+      # --- auditor (optional): kept by `init --auditor` ---
+      - id: auditor
+        agent_ref: "local:agents/auditor"
         runtime: SET-ME
         model: SET-ME
         profile: default
         cwd: "."
-      - id: builder
-        agent_ref: "local:agents/builder"
-        runtime: SET-ME
-        model: SET-ME
-        profile: default
-        cwd: "."
-      - id: reviewer
-        agent_ref: "local:agents/reviewer"
-        runtime: SET-ME
-        model: SET-ME
-        profile: default
-        cwd: "."
-      - id: inspector
-        agent_ref: "local:agents/inspector"
-        runtime: SET-ME
-        model: SET-ME
-        profile: default
-        cwd: "."
-      - id: punchlist
-        agent_ref: "local:agents/punchlist"
-        runtime: SET-ME
-        model: SET-ME
-        profile: default
-        cwd: "."
-      # --- muse (optional): delete from here to the end marker to run without it ---
-      - id: muse
-        agent_ref: "local:agents/muse"
-        runtime: SET-ME
-        model: SET-ME
-        profile: default
-        cwd: "."
-      # --- end muse ---
+      # --- end auditor ---
     edges:
-      - {kind: delegates_to, from: lead, to: architect}
-      - {kind: delegates_to, from: lead, to: dissenter}
-      - {kind: delegates_to, from: lead, to: builder}
-      - {kind: delegates_to, from: lead, to: reviewer}
-      - {kind: delegates_to, from: lead, to: inspector}
-      - {kind: delegates_to, from: lead, to: punchlist}
-      - {kind: delegates_to, from: lead, to: muse}  # muse edge: delete with the muse block
+      - {kind: delegates_to, from: owner, to: checker}
+      - {kind: delegates_to, from: owner, to: auditor}  # auditor edge: removed with the auditor block
 
 edges: []

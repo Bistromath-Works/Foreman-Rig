@@ -1,6 +1,6 @@
-name: foreman-builder
-version: "2.0"
-description: "Foreman Builder - builds the approved plan test-first"
+name: foreman-auditor
+version: "3.0"
+description: "Foreman auditor (optional) - whole-repo audits on a schedule, and fresh eyes when a job is stuck"
 
 imports:
   - ref: local:../shared
@@ -8,7 +8,7 @@ imports:
 profiles:
   default:
     uses:
-      skills: [test-driven-development, systematic-debugging, verification-before-completion]
+      skills: [systematic-debugging]
       guidance: []
       subagents: []
       plugins: [shared:openrig-core]
