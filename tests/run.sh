@@ -512,6 +512,9 @@ seed_state "$OWN" 1
 printf '1 0 corrupt trailing fields\n' > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
 FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
 [ ! -s "$T/keys" ] && ok "unstick: a state record with extra fields restarts the timer" || bad "unstick extra fields" "$(cat "$T/keys")"
+printf '1 0\n\n' > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
+FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
+[ ! -s "$T/keys" ] && ok "unstick: a state record with trailing blank lines restarts the timer" || bad "unstick blank lines" "$(cat "$T/keys")"
 teardown
 
 # --- the smoke-test example project ---

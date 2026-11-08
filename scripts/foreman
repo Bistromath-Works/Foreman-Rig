@@ -344,7 +344,7 @@ unstick_pass() {
     _h="$(cat "$f" 2>/dev/null)" || _h=""
     since="${_h% *}"; tries="${_h#* }"
     if ! cmp -s "$f.new" "$f.pane" || ! printf '%s\n' "$_h" | grep -Eqx '[0-9]{1,12} [0-9]{1,2}' \
-      || [ "$(printf '%s\n' "$_h" | wc -l)" -ne 1 ]; then
+      || [ "$(wc -l < "$f" 2>/dev/null || echo 0)" -ne 1 ]; then
       mv "$f.new" "$f.pane"; printf '%s 0\n' "$now" > "$f"; continue
     fi
     rm -f "$f.new"

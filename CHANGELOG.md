@@ -7,7 +7,8 @@
   in the owner's prompt for 43 minutes (the watchdog's wake landed on the same unsent line)
   until the human pressed Enter. `scripts/foreman up` now starts `scripts/foreman unstick`, which
   presses Enter for a seat only when its unsent prompt holds an OpenRig message and the pane has
-  been still for 60 seconds; three tries per message, every press logged. `down` stops it. See
+  been still for 60 seconds and the unsent text starts as OpenRig's own (never a human draft, a
+  folded paste or a Pi seat); three tries per message, every press logged. `down` stops it. See
   docs/troubleshooting.md, "A seat sits idle with a message in its prompt".
 
 ## 2.0.1 (2026-11-08)
