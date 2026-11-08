@@ -271,9 +271,9 @@ cmd_down() {
 # Enter once. It never checks that the message was sent. Sometimes the Enter is lost and the
 # message sits unsent in the prompt until a human presses Enter (see docs/troubleshooting.md).
 # This watcher presses Enter for the seat, only when all of these hold:
-#   - the seat's unsent prompt holds an OpenRig message: its reply line or the watchdog's header,
-#     or a folded paste ("[Pasted text #N ...]") while OpenRig's queue holds a pending item
-#     addressed to the seat (a fold hides the text, so the queue has to corroborate it);
+#   - the seat's unsent prompt shows an OpenRig message: its reply line or the watchdog's header.
+#     A folded paste ("[Pasted text #N ...]") hides its text, so it is never pressed: nothing
+#     shows who pasted it. (OpenRig's messages render inline in practice.)
 #   - the pane has not changed for UNSTICK_IDLE seconds (the seat is not working, nobody typing);
 #   - it has pressed fewer than UNSTICK_TRIES times for this exact pane.
 # Every press is logged.
@@ -301,13 +301,13 @@ stop_unstick() {
 # The unsent prompt of a seat on runtime $1, from its first line to the bottom of the pane.
 # claude-code: the input line starts with "❯" and a no-break space (sent messages above it use a
 # plain space, so they never match). codex: the last line starting with "›" (tmux trims the space
-# of an empty prompt). No prompt line found: nothing. pi has no prompt line: its last 15 lines.
+# of an empty prompt). No prompt line found, or any other runtime: nothing. pi draws no prompt
+# marker, so its unsent text cannot be told from what it already sent: pi seats are not watched.
 staged_region() {
   awk -v rt="$1" -v claude="^❯"$'\xc2\xa0' '{ l[NR]=$0 }
     rt == "claude-code" && $0 ~ claude { p=NR }
     rt == "codex" && /^›( |$)/ { p=NR }
     END {
-      if (rt == "pi") p = NR > 15 ? NR-14 : 1
       if (!p) exit
       for (i=p; i<=NR; i++) print l[i]
     }'
@@ -318,9 +318,6 @@ staged_region() {
 # so a prompt that wraps, or spaces of any width, still show the marker whole.
 flatten() { awk '{ sub(/│.*$/, ""); gsub(/↩/, "RET>"); print }' | LC_ALL=C tr -cd '[:graph:]'; }
 
-seat_has_pending() {
-  rig queue list --destination "$1" -o json 2>/dev/null | grep -q '"state": *"pending"'
-}
 
 unstick_log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$(unstick_dir)/log"; }
 
@@ -335,9 +332,6 @@ unstick_pass() {
     region="$(printf '%s' "${pane%x}" | staged_region "$rt" | flatten)"
     hit=0
     for m in "${UNSTICK_MARKERS[@]}"; do case "$region" in *"$m"*) hit=1 ;; esac; done
-    if [ "$hit" = 0 ]; then
-      case "$region" in *'[Pastedtext#'*|*'[PastedContent'*) seat_has_pending "$seat" && hit=1 ;; esac
-    fi
     [ "$hit" = 1 ] || { rm -f "$f" "$f.pane"; continue; }
     # State: a copy of the pane ($f.pane) and "since tries" ($f). Any byte of difference, or a
     # record that is not two short plain numbers, starts the idle timer over.

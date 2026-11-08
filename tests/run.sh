@@ -408,11 +408,10 @@ teardown
 unstick_setup
 printf '─────\n❯%s[Pasted text #3 +6 lines]\n─────\n' "$NB" > "$T/pane.$OWN"
 pass2
-[ ! -s "$T/keys" ] && ok "unstick: a folded paste with no pending queue item is left alone" || bad "unstick fold no-queue" "$(cat "$T/keys")"
 printf '#!/bin/sh\n[ "$1 $2" = "queue list" ] && echo %s\nexit 0\n' "'[{\"state\":\"pending\"}]'" > "$T/bin/rig"
 pass2
-[ "$(cat "$T/keys" 2>/dev/null)" = "=$OWN: Enter" ] && ok "unstick: a folded paste is pressed when OpenRig's queue holds a pending item for the seat" \
-  || bad "unstick fold queue" "$(cat "$T/keys" 2>/dev/null)"
+[ ! -s "$T/keys" ] && ok "unstick: a folded paste is never pressed, even with a pending queue item (it may be the human's)" \
+  || bad "unstick fold" "$(cat "$T/keys")"
 teardown
 
 unstick_setup
@@ -478,6 +477,15 @@ seed_state "$OWN" 18446744073709551616
 FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && [ ! -s "$T/keys" ] && ok "unstick: an out-of-range timestamp starts the timer over instead of pressing" \
   || bad "unstick huge since" "rc=$rc $(cat "$T/keys" 2>/dev/null)"
+teardown
+
+unstick_setup
+rm -f "$RIG"; "$F" init "$P" --auditor >/dev/null 2>&1; fill auditor=pi:m
+"$F" unstick "$P" --once >/dev/null 2>&1   # sanity: the rig file now has a pi auditor
+grep -q "id: auditor" "$RIG" && grep -q "runtime: pi" "$RIG" || bad "pi test setup: no pi auditor in rig file"
+printf 'From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\na draft\n' > "$T/pane.crew-auditor@foreman-my-app"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: pi seats are never pressed (no prompt marker to go by)" || bad "unstick pi" "$(cat "$T/keys")"
 teardown
 
 # --- the smoke-test example project ---
