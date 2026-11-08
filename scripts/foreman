@@ -271,9 +271,10 @@ cmd_down() {
 # Enter once. It never checks that the message was sent. Sometimes the Enter is lost and the
 # message sits unsent in the prompt until a human presses Enter (see docs/troubleshooting.md).
 # This watcher presses Enter for the seat, only when all of these hold:
-#   - the seat's unsent prompt shows an OpenRig message: its reply line or the watchdog's header.
-#     A folded paste ("[Pasted text #N ...]") hides its text, so it is never pressed: nothing
-#     shows who pasted it. (OpenRig's messages render inline in practice.)
+#   - the seat's unsent prompt is OpenRig's: it starts with OpenRig's header ("From:" or the
+#     watchdog's "[OpenRig watchdog scheduler") and shows its reply line or the watchdog header.
+#     Text typed before it, or any folded paste ("[Pasted text #N ...]", which hides who pasted
+#     it), means a human may be in it: never pressed. (OpenRig's messages render inline.)
 #   - the pane has not changed for UNSTICK_IDLE seconds (the seat is not working, nobody typing);
 #   - it has pressed fewer than UNSTICK_TRIES times for this exact pane.
 # Every press is logged.
@@ -331,15 +332,19 @@ unstick_pass() {
     pane="$(tmux capture-pane -p -t "=$seat:" 2>/dev/null && printf x)" || { rm -f "$f" "$f.pane"; continue; }
     region="$(printf '%s' "${pane%x}" | staged_region "$rt" | flatten)"
     hit=0
-    for m in "${UNSTICK_MARKERS[@]}"; do case "$region" in *"$m"*) hit=1 ;; esac; done
+    case "$region" in
+      *'[Pastedtext#'*|*'[PastedContent'*) ;;                       # a fold: could be anyone's
+      'From:'*|'[OpenRigwatchdogscheduler'*)                          # starts as OpenRig's
+        for m in "${UNSTICK_MARKERS[@]}"; do case "$region" in *"$m"*) hit=1 ;; esac; done ;;
+    esac
     [ "$hit" = 1 ] || { rm -f "$f" "$f.pane"; continue; }
     # State: a copy of the pane ($f.pane) and "since tries" ($f). Any byte of difference, or a
     # record that is not two short plain numbers, starts the idle timer over.
     printf '%s' "$pane" > "$f.new"
-    since=""; tries=""
-    read -r since tries _h 2>/dev/null < "$f" || true
-    if ! cmp -s "$f.new" "$f.pane" \
-      || ! printf '%s %s' "$since" "$tries" | grep -Eqx '[0-9]{1,12} [0-9]{1,2}'; then
+    _h="$(cat "$f" 2>/dev/null)" || _h=""
+    since="${_h% *}"; tries="${_h#* }"
+    if ! cmp -s "$f.new" "$f.pane" || ! printf '%s\n' "$_h" | grep -Eqx '[0-9]{1,12} [0-9]{1,2}' \
+      || [ "$(printf '%s\n' "$_h" | wc -l)" -ne 1 ]; then
       mv "$f.new" "$f.pane"; printf '%s 0\n' "$now" > "$f"; continue
     fi
     rm -f "$f.new"

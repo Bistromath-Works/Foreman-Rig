@@ -422,7 +422,7 @@ for i in 1 2 3 4 5 6; do "$F" unstick "$P" --once >/dev/null 2>&1; done
 teardown
 
 unstick_setup
-printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
 FOREMAN_UNSTICK_IDLE=3600 pass2
 [ ! -s "$T/keys" ] && ok "unstick: waits until the pane has been unchanged for the idle time" || bad "unstick idle" "$(cat "$T/keys")"
 teardown
@@ -440,13 +440,13 @@ pass2
 teardown
 
 unstick_setup
-printf '❯%s↩%sReply:%srig%ssend x\n' "$NB" "$NB" "$NB" "$NB" > "$T/pane.$OWN"
+printf '❯%sFrom: x --- ↩%sReply:%srig%ssend x\n' "$NB" "$NB" "$NB" "$NB" > "$T/pane.$OWN"
 pass2
 [ -s "$T/keys" ] && ok "unstick: no-break spaces inside the message still match" || bad "unstick nbsp marker"
 teardown
 
 unstick_setup
-printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
 seed_state "$OWN" 08 0
 out="$("$F" unstick "$P" --once 2>&1)"; rc=$?
 [ "$rc" = 0 ] && [ -s "$T/keys" ] && ok "unstick: a state record with a leading zero neither crashes nor blocks" || bad "unstick corrupt state" "rc=$rc $out"
@@ -456,7 +456,7 @@ printf 'garbage\n' > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
 teardown
 
 unstick_setup
-printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
 FOREMAN_UNSTICK_IDLE=3600 "$F" unstick "$P" --once >/dev/null 2>&1   # the script records its own hash
 st="$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
 printf '1 0\n' > "$st"   # ...then age it: seen long ago
@@ -466,13 +466,13 @@ FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
 teardown
 
 unstick_setup
-printf '❯%s↩ Reply: rig\342\200\257send x\n' "$NB" > "$T/pane.$OWN"
+printf '❯%sFrom: x --- ↩ Reply: rig\342\200\257send x\n' "$NB" > "$T/pane.$OWN"
 pass2
 [ -s "$T/keys" ] && ok "unstick: any width of space inside the message still matches" || bad "unstick narrow nbsp"
 teardown
 
 unstick_setup
-printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
 seed_state "$OWN" 18446744073709551616
 FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && [ ! -s "$T/keys" ] && ok "unstick: an out-of-range timestamp starts the timer over instead of pressing" \
@@ -486,6 +486,32 @@ grep -q "id: auditor" "$RIG" && grep -q "runtime: pi" "$RIG" || bad "pi test set
 printf 'From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\na draft\n' > "$T/pane.crew-auditor@foreman-my-app"
 pass2
 [ ! -s "$T/keys" ] && ok "unstick: pi seats are never pressed (no prompt marker to go by)" || bad "unstick pi" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%s[Pasted text #2 +4 lines][OpenRig watchdog scheduler · policy: x] You are parked\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: a human's folded paste with a watchdog wake appended is left alone" || bad "unstick fold+wake" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%smy draft From: crew-checker@x --- ↩ Reply: rig send crew-checker@x "..."\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: a human's typed draft with an OpenRig message appended is left alone" || bad "unstick draft+msg" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '❯%sFrom: crew-checker@x\n  ---\n  ↩ Reply: rig send crew-checker@x "..."[OpenRig watchdog scheduler · policy: p] You are parked\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ -s "$T/keys" ] && ok "unstick: the real stuck shape (handoff plus watchdog wake on one unsent prompt) is pressed" || bad "unstick real shape"
+teardown
+
+unstick_setup
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+seed_state "$OWN" 1
+printf '1 0 corrupt trailing fields\n' > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/$OWN"
+FOREMAN_UNSTICK_IDLE=60 "$F" unstick "$P" --once >/dev/null 2>&1
+[ ! -s "$T/keys" ] && ok "unstick: a state record with extra fields restarts the timer" || bad "unstick extra fields" "$(cat "$T/keys")"
 teardown
 
 # --- the smoke-test example project ---

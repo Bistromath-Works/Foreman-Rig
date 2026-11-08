@@ -84,14 +84,17 @@ message sits unsent (often with the watchdog's wake added on the same line) unti
 presses Enter. The crew stalls with nothing waiting on you.
 
 `scripts/foreman up` starts a watcher for this in its own tmux session,
-`foreman-unstick@foreman-<project>`. It presses Enter only when the seat's unsent prompt holds an
-OpenRig message (the `↩ Reply: rig send` line or the `[OpenRig watchdog scheduler` header) and the
-pane has not changed for 60 seconds. A folded `[Pasted text #N]` is never pressed, since nothing
-shows who pasted it; press Enter yourself if it is OpenRig's. Claude and Codex seats are
-watched; Pi seats (usually only the optional auditor) are not, because Pi's prompt has no marker
-that separates unsent text from what was already sent. It tries at most three times per stuck message, then
-leaves it for you. Every press is logged in `~/.openrig/foreman-unstick/foreman-<project>/log`.
-Text you type yourself never carries those markers, so it is left alone.
+`foreman-unstick@foreman-<project>`. It presses Enter for a seat only when:
+
+- the seat's unsent prompt is OpenRig's own: it starts with OpenRig's header (`From:` or
+  `[OpenRig watchdog scheduler`) and shows its `↩ Reply: rig send` line or the watchdog header;
+- the pane has not changed for 60 seconds.
+
+It tries at most three times per stuck message, then leaves it for you, and logs every press in
+`~/.openrig/foreman-unstick/foreman-<project>/log`. It never presses when you may be in the
+prompt: text typed before OpenRig's header, or a folded `[Pasted text #N]` (which hides who pasted
+it). Claude and Codex seats are watched. Pi seats (usually only the optional auditor) are not:
+Pi's prompt has no marker that separates unsent text from what was already sent.
 
 Not running? Start it with `scripts/foreman unstick <project>` in any terminal, or press Enter
 in the seat's pane yourself; that is always safe.
