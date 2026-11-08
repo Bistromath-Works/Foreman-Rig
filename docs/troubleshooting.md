@@ -77,6 +77,23 @@ They act only on a queue item from the owner (`CULTURE.md`, "How work moves"). I
 a `SPEC.md` it found in the repo, tell it to stop; the owner's intake check (clean tree, on the
 base branch) catches any stray commits.
 
+## A seat sits idle with a message in its prompt
+OpenRig hands a message to a seat by pasting it into the prompt, waiting 200 ms and pressing
+Enter once. It does not check that the message went in, and sometimes the Enter is lost: the
+message sits unsent (often with the watchdog's wake added on the same line) until someone
+presses Enter. The crew stalls with nothing waiting on you.
+
+`scripts/foreman up` starts a watcher for this in its own tmux session,
+`foreman-unstick@foreman-<project>`. It presses Enter only when the seat's unsent prompt holds an
+OpenRig message (the `↩ Reply: rig send` line or the watchdog header; a folded
+`[Pasted text #N]` counts only while OpenRig's queue has a pending item for that seat) and the
+pane has not changed for 60 seconds. It tries at most three times per stuck message, then
+leaves it for you. Every press is logged in `~/.openrig/foreman-unstick/foreman-<project>/log`.
+Text you type yourself never carries those markers, so it is left alone.
+
+Not running? Start it with `scripts/foreman unstick <project>` in any terminal, or press Enter
+in the seat's pane yourself; that is always safe.
+
 ## The owner asks me something I already answered
 The answer isn't in `.foreman/STATE.md`, or the owner didn't read it. Answer once more and tell
 it to record the answer under "Human answers". A crew launched before 2.0.1 doesn't have the

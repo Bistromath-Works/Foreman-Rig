@@ -41,6 +41,9 @@ if [ "\$1 \$2" = "spec validate" ] && [ -f "$T/validate.fail" ]; then echo "bad 
 exit 0
 EOF
   chmod +x "$T/bin/rig"
+  # tmux is always a stub: no test may start a real session.
+  printf '#!/bin/sh\necho "$*" >> "%s/tmux.calls"\n[ "$1" = has-session ] && exit 1\nexit 0\n' "$T" > "$T/bin/tmux"
+  chmod +x "$T/bin/tmux"
   export PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" OPENRIG_HOME="$T/home/.openrig"
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   unset PI_CODING_AGENT_DIR
@@ -347,6 +350,76 @@ git -C "$P" add -f .claude/settings.local.json && git -C "$P" commit -qm tracked
 out="$(env $LF "$F" tracing "$P" 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -q 'tracked by git; refusing' && ! grep -q sk-test "$P/.claude/settings.local.json" \
   && ok "tracing refuses to put keys in a file git tracks" || bad "tracked secret file" "$out"
+teardown
+
+# --- unstick watcher lifecycle ---
+setup
+"$F" init "$P" >/dev/null 2>&1; fill
+"$F" up "$P" >/dev/null 2>&1
+grep -q "new-session -d -s foreman-unstick@foreman-my-app" "$T/tmux.calls" 2>/dev/null \
+  && ok "up starts the unstick watcher in its own tmux session" || bad "up starts watcher" "$(cat "$T/tmux.calls" 2>/dev/null)"
+"$F" down "$P" >/dev/null 2>&1
+grep -q "kill-session -t =foreman-unstick@foreman-my-app" "$T/tmux.calls" \
+  && ok "down stops the unstick watcher" || bad "down stops watcher" "$(cat "$T/tmux.calls")"
+teardown
+
+# --- unstick: press Enter on OpenRig messages left unsent ---
+
+# Fake tmux: a seat's pane is $T/pane.<session>; send-keys is recorded.
+unstick_setup() {
+  setup
+  "$F" init "$P" >/dev/null 2>&1; fill
+  cat > "$T/bin/tmux" <<STUB
+#!/bin/sh
+case "\$1" in
+  capture-pane) t="\$4"; t="\${t#=}"; t="\${t%:}"; [ -f "$T/pane.\$t" ] && cat "$T/pane.\$t" || exit 1 ;;
+  send-keys) echo "\$3 \$4" >> "$T/keys" ;;
+  has-session) exit 1 ;;
+  *) echo "\$*" >> "$T/tmux.calls" ;;
+esac
+STUB
+  chmod +x "$T/bin/tmux"
+  export FOREMAN_UNSTICK_IDLE=0
+  NB="$(printf '\302\240')"
+}
+pass2() { "$F" unstick "$P" --once >/dev/null 2>&1; "$F" unstick "$P" --once >/dev/null 2>&1; }
+OWN="crew-owner@foreman-my-app"
+
+unstick_setup
+printf 'old\n❯ sent earlier\n─────\n❯%sFrom: crew-checker@x --- ↩ Reply: rig\n  send crew-checker@x "..."   │ side panel\n─────\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ "$(cat "$T/keys" 2>/dev/null)" = "=$OWN: Enter" ] && ok "unstick: presses Enter once on an unsent message, even when it wraps" \
+  || bad "unstick press" "$(cat "$T/keys" 2>/dev/null)"
+teardown
+
+unstick_setup
+printf '❯ From: crew-checker@x --- ↩ Reply: rig send crew-checker@x\n● done\n─────\n❯%sa draft I am typing\n─────\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: leaves a human's draft alone, even under an OpenRig message already sent" \
+  || bad "unstick draft" "$(cat "$T/keys")"
+teardown
+
+unstick_setup
+printf '─────\n❯%s[Pasted text #3 +6 lines]\n─────\n' "$NB" > "$T/pane.$OWN"
+pass2
+[ ! -s "$T/keys" ] && ok "unstick: a folded paste with no pending queue item is left alone" || bad "unstick fold no-queue" "$(cat "$T/keys")"
+printf '#!/bin/sh\n[ "$1 $2" = "queue list" ] && echo %s\nexit 0\n' "'[{\"state\":\"pending\"}]'" > "$T/bin/rig"
+pass2
+[ "$(cat "$T/keys" 2>/dev/null)" = "=$OWN: Enter" ] && ok "unstick: a folded paste is pressed when OpenRig's queue holds a pending item for the seat" \
+  || bad "unstick fold queue" "$(cat "$T/keys" 2>/dev/null)"
+teardown
+
+unstick_setup
+printf '› From: crew-owner@x --- ↩ Reply: rig send crew-owner@x "..."\n  model line\n' > "$T/pane.crew-checker@foreman-my-app"
+for i in 1 2 3 4 5 6; do "$F" unstick "$P" --once >/dev/null 2>&1; done
+[ "$(wc -l < "$T/keys" 2>/dev/null)" = 3 ] && grep -q "leaving it for a human" "$OPENRIG_HOME/foreman-unstick/foreman-my-app/log" \
+  && ok "unstick: Codex prompt; stops after 3 presses on the same pane and logs it" || bad "unstick cap" "$(cat "$T/keys" 2>/dev/null)"
+teardown
+
+unstick_setup
+printf '❯%s↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
+FOREMAN_UNSTICK_IDLE=3600 pass2
+[ ! -s "$T/keys" ] && ok "unstick: waits until the pane has been unchanged for the idle time" || bad "unstick idle" "$(cat "$T/keys")"
 teardown
 
 # --- the smoke-test example project ---
