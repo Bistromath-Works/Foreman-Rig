@@ -9,6 +9,11 @@ a job is stuck. Your session name and rig are in `rig whoami --json`.
 The human is asked about three things only: **big decisions, serious failures, and
 domain-specific knowledge**. Only the owner asks. Every other seat routes questions to the owner.
 
+## The project state
+`.foreman/STATE.md` is the project's memory across jobs and sessions: what is live, every
+answer the human has given, what waits on the human, open work. It outranks older notes in
+`.foreman/`. Read it before your first task. Only the owner writes it.
+
 ## The project settings
 `.foreman/project.yaml` in the repo holds this project's facts: base branch, preflight command,
 verify command, acceptance test path, protected paths, banned commands, audit cadence. Read it

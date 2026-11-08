@@ -13,6 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE="$ROOT/rig.template.yaml"
 PROJECT_TEMPLATE="$ROOT/project.template.yaml"
+STATE_TEMPLATE="$ROOT/state.template.md"
 # Paths OpenRig and the runtimes create in the project; kept out of git via .git/info/exclude.
 EXCLUDES=(.foreman/ .openrig/ .claude/ .codex/ .agents/ .pi/ .mcp.json CLAUDE.local.md)
 # Of those (plus AGENTS.md), the ones OpenRig may write into. If the project tracks files there,
@@ -104,6 +105,13 @@ cmd_init() {
   else
     cp "$PROJECT_TEMPLATE" "$PROJECT_FILE"
     say "wrote $PROJECT_FILE"
+  fi
+  # The owner's memory across jobs: never overwritten, it holds the human's answers.
+  if [ -f "$PROJECT/.foreman/STATE.md" ]; then
+    say "kept existing $PROJECT/.foreman/STATE.md"
+  else
+    cp "$STATE_TEMPLATE" "$PROJECT/.foreman/STATE.md"
+    say "wrote $PROJECT/.foreman/STATE.md (the owner fills it in)"
   fi
   hygiene
   say ""

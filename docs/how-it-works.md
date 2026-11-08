@@ -65,6 +65,22 @@ job), and **domain-specific knowledge** (facts no model can know: your fees, you
 business). Pushes and live-system steps such as database migrations are yours too: the owner
 merges locally and tells you what to run and in what order.
 
+## What the crew remembers
+
+Each seat starts with no memory of earlier sessions, and a coding agent's own memory files are
+usually stored per folder and per person, so the crew can't rely on them. What carries across
+jobs and sessions is `.foreman/STATE.md`, which the owner reads on boot and updates at the end
+of every job:
+
+- **Live systems:** what is deployed, and the last migration applied to each live database, with
+  who confirmed it. The crew can't see live systems, so without this it has to ask.
+- **Human answers:** every domain fact or decision you have given, dated. The owner writes your
+  answer there in the same turn, so you are never asked twice.
+- **Waiting on the human, not yet verified, open work.**
+
+It outranks older notes in `.foreman/`. The auditor checks it against the code on every audit.
+`scripts/foreman init` creates it from a template and never overwrites it.
+
 ## The auditor
 
 Optional (`scripts/foreman init <project> --auditor`). Two duties:
@@ -84,6 +100,7 @@ It works best as a different model family from the owner and the checker.
 |---|---|---|
 | `PROJECT/.foreman/project.yaml` | Project settings every seat reads | No (excluded locally) |
 | `PROJECT/.foreman/jobs/<job-id>/` | Spec, briefs, verdicts, decisions, `LOG.md`, `RESUME.md` | No (remove `.foreman/` from `.git/info/exclude` if you want ledgers committed) |
+| `PROJECT/.foreman/STATE.md` | What is live, your answers, what waits on you, open work | No |
 | `PROJECT/.foreman/audits/` | Auditor reports and the merged-job count | No |
 | `foreman/<job-id>` branch | The owner's commits | Yes, merged after the checker's PASS |
 | `PROJECT/CLAUDE.local.md`, `AGENTS.md` | OpenRig's instruction blocks for the seats | No (excluded or skip-worktree) |

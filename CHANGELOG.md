@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.1 (2026-11-08)
+
+- **`.foreman/STATE.md`: the crew's memory across jobs and sessions.** On its first real use the
+  new owner asked the human things already settled the day before (which migrations were live,
+  a fee schedule already decided), because those answers lived only in a chat and in another
+  session's private notes. STATE.md holds what is live, every answer the human has given
+  (dated), what waits on the human, what is unverified and open work. The owner reads it on
+  boot, writes the human's answers into it the same turn, and updates it after every job; it
+  outranks older notes. The auditor checks it against the code.
+- `scripts/foreman init` creates it from `state.template.md` and never overwrites it.
+
 ## 2.0.0 (2026-11-07)
 
 Two seats instead of seven. Built from a real run: a Foreman 1 app audited at 58/100 was fixed
