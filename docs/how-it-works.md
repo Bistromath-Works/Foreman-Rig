@@ -45,7 +45,7 @@ the optional auditor.
 
 | Step | Who | Ends when |
 |---|---|---|
-| Intake | owner | The spec is written; domain questions asked once, if any |
+| Intake | owner | The spec is written; you are asked only if the goal is genuinely open, plus any domain questions, once |
 | Measure | owner | It knows the area, what to remove or merge, and the smallest plan |
 | Plan check *(big jobs)* | checker | Each objection is fixed or rebutted in `DECISIONS.md` |
 | Build | owner | Tests first, verify command green, own diff read once |

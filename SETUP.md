@@ -189,7 +189,8 @@ Tell them, plainly:
 3. **If a seat asks whether to start fresh, answer `y`.** Enter alone means No.
 4. **Approve any hook or folder-trust prompt** a seat shows on first start.
 5. **Start a job** by telling the owner what to build: a path to a spec file, or a plain
-   description (the owner writes it up and asks them to confirm once). After that it asks only
+   description (the owner writes it up, says what it understood, and asks only if the goal is
+   genuinely unclear). After that it asks only
    about big decisions, serious failures and domain knowledge, and tells them when a push or a
    migration is theirs to do.
 6. **Prove it works** before a real job, if they have 20 minutes: the smoke test in

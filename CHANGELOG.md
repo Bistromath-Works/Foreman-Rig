@@ -10,6 +10,9 @@
   boot, writes the human's answers into it the same turn, and updates it after every job; it
   outranks older notes. The auditor checks it against the code.
 - `scripts/foreman init` creates it from `state.template.md` and never overwrites it.
+- The owner no longer asks "Is this the job?" on every description: it says what it understood
+  and starts, and asks only when the goal or scope is genuinely open (a big decision). Writing
+  to its `.foreman/` ledger never waits on the checkout lock.
 
 ## 2.0.0 (2026-11-07)
 

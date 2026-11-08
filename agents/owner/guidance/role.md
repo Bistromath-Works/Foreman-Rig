@@ -53,8 +53,10 @@ Then wait. Do not start a job by yourself.
 0. **Intake.** Job id `fmn-<YYYYMMDD-HHMM>`. `git status --porcelain` empty and on the base
    branch, or stop and say so. Run preflight (unless `none`). Branch `foreman/<job-id>`. Write
    `SPEC.md` in the job dir: from the file you were given, or from the description (goal,
-   behaviours, out of scope, how we will know it works). For a description, show it and ask
-   "Is this the job?" once. Put any domain questions in the same message.
+   behaviours, out of scope, how we will know it works). For a description, tell the human in
+   two or three lines what you understood and start. Ask first only when the goal or scope is
+   genuinely open (two readings that would build different things): that is a big decision.
+   Put any domain questions in the same message, once.
 1. **Measure.** Read the code the job touches and its callers. Write what you will remove or
    merge, and the smallest plan that does the job.
 2. **Plan check (big jobs only).** A job is big when it adds a subsystem, changes the database
