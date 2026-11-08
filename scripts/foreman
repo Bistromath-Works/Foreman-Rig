@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Foreman setup helper for OpenRig.
 #
-#   scripts/foreman init    <project> [--muse]   create rig.<name>.yaml + <project>/.foreman/project.yaml
+#   scripts/foreman init    <project> [--auditor] create rig.<name>.yaml + <project>/.foreman/project.yaml
 #   scripts/foreman check   <project>            refuse while any SET-ME is left; validate with OpenRig
 #   scripts/foreman up      <project>            check, prepare the project, launch the crew
 #   scripts/foreman down    <project>            stop the crew
@@ -18,8 +18,8 @@ EXCLUDES=(.foreman/ .openrig/ .claude/ .codex/ .agents/ .pi/ .mcp.json CLAUDE.lo
 # Of those (plus AGENTS.md), the ones OpenRig may write into. If the project tracks files there,
 # they are marked skip-worktree so OpenRig's additions never show up in git status or commits.
 OPENRIG_WRITES=(.claude/ .codex/ .agents/ .pi/ .mcp.json CLAUDE.local.md AGENTS.md)
-SEATS=(lead architect dissenter builder reviewer inspector punchlist)   # muse is optional
-PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_paths banned_cmds)
+SEATS=(owner checker)   # the auditor is optional
+PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_paths banned_cmds audit_every)
 
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -73,10 +73,10 @@ members() {
 # --- init ---------------------------------------------------------------------------------
 
 cmd_init() {
-  local muse=0 arg project=""
+  local auditor=0 arg project=""
   for arg in "$@"; do
     case "$arg" in
-      --muse) muse=1 ;;
+      --auditor) auditor=1 ;;
       -*) die "unknown option: $arg" ;;
       *) [ -z "$project" ] || die "init takes one project path"; project="$arg" ;;
     esac
@@ -85,18 +85,18 @@ cmd_init() {
   if [ -f "$RIG_FILE" ]; then
     require_rig_file
     say "kept existing $RIG_FILE"
-    [ "$muse" -eq 0 ] || say "note: --muse ignored because the file already exists; delete the file and run init --muse again (it has no secrets, only your model choices)"
+    [ "$auditor" -eq 0 ] || say "note: --auditor ignored because the file already exists; delete the file and run init --auditor again (it has no secrets, only your model choices)"
   else
     {
       printf '# project: %s\n' "$PROJECT"
       sed "s/^name: SET-ME$/name: $RIG_NAME/" "$TEMPLATE"
     } > "$RIG_FILE.tmp"
-    if [ "$muse" -eq 0 ]; then
-      sed -i.bak '/--- muse (optional)/,/--- end muse ---/d; /muse edge:/d' "$RIG_FILE.tmp"
+    if [ "$auditor" -eq 0 ]; then
+      sed -i.bak '/--- auditor (optional)/,/--- end auditor ---/d; /auditor edge:/d' "$RIG_FILE.tmp"
       rm -f "$RIG_FILE.tmp.bak"
     fi
     mv "$RIG_FILE.tmp" "$RIG_FILE"
-    say "wrote $RIG_FILE (rig name $RIG_NAME$( [ "$muse" -eq 1 ] && echo ', with the muse'))"
+    say "wrote $RIG_FILE (rig name $RIG_NAME$( [ "$auditor" -eq 1 ] && echo ', with the auditor'))"
   fi
   mkdir -p "$PROJECT/.foreman"
   if [ -f "$PROJECT_FILE" ]; then
@@ -143,7 +143,7 @@ cmd_check() {
   done < <(members)
   for seat in "${SEATS[@]}"; do
     found="$(members | awk -v s="$seat" '$1 == s' )"
-    [ -n "$found" ] || problems+=("rig file: seat '$seat' is missing (only the muse is optional)")
+    [ -n "$found" ] || problems+=("rig file: seat '$seat' is missing (only the auditor is optional)")
   done
   grep -q '^name: SET-ME' "$RIG_FILE" && problems+=("rig file: name is still SET-ME")
   for key in "${PROJECT_KEYS[@]}"; do
@@ -151,6 +151,8 @@ cmd_check() {
     if ! grep -q "^$key:" "$PROJECT_FILE"; then problems+=("project.yaml: '$key' is missing")
     elif [ -z "$val" ]; then problems+=("project.yaml: '$key' has no value")
     elif [ "$val" = SET-ME ]; then problems+=("project.yaml: '$key' is still SET-ME")
+    elif [ "$key" = audit_every ] && ! printf '%s' "$val" | grep -Eq '^([1-9][0-9]*|manual)$'; then
+      problems+=("project.yaml: 'audit_every' must be a whole number of jobs or manual, not '$val'")
     fi
   done
   if [ "${#problems[@]}" -gt 0 ]; then
@@ -238,7 +240,7 @@ cmd_up() {
   rig up "$RIG_FILE" --cwd "$PROJECT"
   say ""
   say "The crew is starting. Watch it with: rig tui   (or: rig ps)"
-  say "Talk to the lead with: tmux attach -t crew-lead@$RIG_NAME   (Ctrl-b d to leave)"
+  say "Talk to the owner with: tmux attach -t crew-owner@$RIG_NAME   (Ctrl-b d to leave)"
   say "If a seat asks whether to start fresh, answer y (Enter alone means No)."
 }
 

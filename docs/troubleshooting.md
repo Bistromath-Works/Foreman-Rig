@@ -29,7 +29,7 @@ Claude seats, accept-edits mode). See the next entry.
 ## Claude seats keep stopping to ask permission
 They launch in "accept edits" mode. Switch each Claude seat to auto mode in its pane
 (`Shift+Tab` cycles the modes), or approve prompts as they come. A seat waiting on a prompt
-looks idle to everyone else, so the lead appears stuck.
+looks idle to everyone else, so the owner appears stuck.
 
 ## A seat approved another seat's permission prompt
 When a seat sits at a prompt for a while, OpenRig may ask another seat to "recover" it, and a
@@ -60,7 +60,7 @@ edits to them are hidden from git too. To edit one for real:
 ## A seat hangs after starting a server
 Seats must never start dev servers or background processes; the crew rules forbid it, because a
 background process outlives the turn and blocks on prompts nobody sees. Your `verify_cmd` may
-start and stop a server itself. If a seat broke the rule, stop that process and tell the lead.
+start and stop a server itself. If a seat broke the rule, stop that process and tell the owner.
 
 ## A Codex seat can't reach a local database or service
 Codex runs commands in its own sandbox, which may block local network access. Either give that
@@ -68,15 +68,20 @@ seat a less restrictive permission policy in your rig file (`permission_policy: 
 `builtin:yolo`, at your own risk: read OpenRig's docs on what each allows), or put a different
 runtime in that seat.
 
-## The lead started without me
+## The owner started without me
 It shouldn't: on boot it says it's ready and waits for a job. If it does start, tell it to stop
 and re-read its role.
 
-## A seat started work before the lead gave it any
-Seats wait for a queue item from the lead (`CULTURE.md`, "How work moves"). Crews launched
-before 1.0.1 lack that rule, and eager models may build a `SPEC.md` they find in the repo,
-even committing to the base branch. The lead's pre-job check catches this and asks you what
-to do. Update Foreman, then start the crew over (see below) so seats get the new rule.
+## The checker or auditor started work on its own
+They act only on a queue item from the owner (`CULTURE.md`, "How work moves"). If one starts on
+a `SPEC.md` it found in the repo, tell it to stop; the owner's intake check (clean tree, on the
+base branch) catches any stray commits.
+
+## Upgrading a 1.x crew
+Foreman 2 has different seats, so a 1.x crew can't be resumed. `rig down foreman-<project>
+--delete`, delete `rig.<project>.yaml`, run `scripts/foreman init <project>` (add `--auditor` if
+you want it), fill in the models, and add `audit_every:` to `.foreman/project.yaml` (`check`
+tells you). Old job ledgers in `.foreman/jobs/` stay as they are.
 
 ## I changed a model in the rig file and nothing changed
 OpenRig reads the rig file only when it first creates the rig. After that, `rig up` resumes the

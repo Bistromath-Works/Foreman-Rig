@@ -1,6 +1,6 @@
-name: foreman-reviewer
-version: "2.0"
-description: "Foreman Reviewer - reviews each build round with commands"
+name: foreman-owner
+version: "3.0"
+description: "Foreman owner - owns the repo, plans, builds, talks to the human; never approves its own work"
 
 imports:
   - ref: local:../shared
@@ -8,7 +8,7 @@ imports:
 profiles:
   default:
     uses:
-      skills: [systematic-debugging, verification-before-completion]
+      skills: [test-driven-development, systematic-debugging, verification-before-completion]
       guidance: []
       subagents: []
       plugins: [shared:openrig-core]

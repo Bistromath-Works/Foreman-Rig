@@ -1,50 +1,51 @@
 # Foreman crew rules (every seat)
 
-This rig runs one spec'd coding job at a time as a gated pipeline. The lead (`crew-lead`) runs
-the pipeline and talks to the human; every other seat does one role when the lead hands it work.
-Your session name and rig are in `rig whoami --json`. The lead is `crew-lead@<your rig>`.
+This rig runs one coding job at a time. The owner (`crew-owner`) owns the repository, builds,
+and is the only seat that talks to the human. The checker (`crew-checker`) is the independent
+gate; the auditor (`crew-auditor`, optional) audits the whole repo on a schedule and helps when
+a job is stuck. Your session name and rig are in `rig whoami --json`.
+
+## The human
+The human is asked about three things only: **big decisions, serious failures, and
+domain-specific knowledge**. Only the owner asks. Every other seat routes questions to the owner.
 
 ## The project settings
 `.foreman/project.yaml` in the repo holds this project's facts: base branch, preflight command,
-verify command, acceptance test path, protected paths and banned commands. Read it before your
-first command. Where this file or your role says "the verify command" or "the base branch", it
-means the value in `project.yaml`. Never guess a command the file does not name.
+verify command, acceptance test path, protected paths, banned commands, audit cadence. Read it
+before your first command. "The verify command" or "the base branch" means the value there.
+Never guess a command the file does not name.
 
 ## How work moves
-- **Work arrives only as a queue item from the lead.** On boot, and whenever your queue is empty,
-  do nothing: no reading the spec, no planning, no building, even if a `SPEC.md` or task is
-  sitting in the repo. Say you are ready in one line and wait. Starting on your own puts work on
-  the base branch outside the pipeline.
-- `rig queue claim <id>` the item, then do it.
-- Your inputs are files the lead names, under `.foreman/jobs/<job-id>/ctx/`. Read those first.
-- Write your result to the exact output path the lead gave you: a Markdown file that starts
-  with a short header block (e.g. `verdict: PASS`, `blocked_on: null`), then the body.
-  Never only reply in chat.
+- **The checker and auditor act only on a queue item from the owner.** On boot, and whenever
+  your queue is empty, do nothing: say you are ready in one line and wait, even if a spec or
+  task is sitting in the repo.
+- `rig queue claim <id>` the item, then do it. Inputs are the files the task names, under
+  `.foreman/jobs/<job-id>/ctx/` (or `.foreman/audits/`).
+- Write your result to the exact output path the task gives: a Markdown file that starts with a
+  short header block (`verdict: PASS`, `kind: audit`, ...), then the body. Never only reply in chat.
 - Hand back with a pointer, not the content:
-  `rig queue handoff <id> --to crew-lead@<rig> --summary "<your verdict line>" --body "out: <your output path>"`.
-  The lead reads the file; pasting the report into the queue would bloat the lead's context.
-- If you cannot finish, write why to your output file and hand back anyway, with `blocked_on:`
-  filled in. Never wait silently.
+  `rig queue handoff <id> --to crew-owner@<rig> --summary "<one line>" --body "out: <path>"`.
+- If you cannot finish, write why to your output file and hand back anyway. Never wait silently.
 
-## One seat at a time, one checkout
-All seats share one git checkout (and any local database or services the project uses). Only
-the seat the lead has handed work to may run commands. The lead never hands out two items at once.
+## One checkout, one seat working
+All seats share one checkout and any local database or services. Only the seat holding work
+runs commands that change things. The checker may review in a detached worktree outside the
+repo and removes it when done.
 
 ## Safety (absolute, every seat)
-- No `git push`, no `git remote` changes, no `gh`, no cloud or deploy CLIs, no edits outside this
-  repo, no global installs, and nothing on the `banned_cmds` list in `project.yaml`.
-- Never commit to the base branch. Only the lead merges, and only after the human says yes at Gate 3.
-- Nobody starts servers or backgrounds processes: no dev servers, no `nohup`, no `setsid`, no
-  trailing `&`. A backgrounded process outlives your turn and stalls the crew behind a
-  permission prompt nobody sees. The only live server allowed is one the verify command starts
-  and stops itself. A live check it doesn't perform is a finding:
-  `needs live probe: <request and expected result>`.
-- Never edit files under the `acceptance_tests` path or any `protected_paths`. A test you think
-  is wrong is a deviation you report, not an edit you make.
-- Cap every ad-hoc probe: `timeout 120 <command>`. An uncapped probe can eat the machine.
-- A command that is denied or blocked is final: record it in your output, do not retry it in
-  another form.
-- Permission prompts belong to the human. Never answer, approve or type into another seat's
-  prompt, and never use `rig send --dangerously-interact`, even if OpenRig asks you to recover
-  a stuck seat. Tell the lead which seat is stuck; the lead tells the human.
-- Never print, copy or commit secrets. If you see one in the repo, report its path, not its value.
+- No `git push`, no `git remote` changes, no `gh`, no cloud, deploy or hosted-database CLIs, no
+  edits outside this repo (a temporary detached worktree for checking is the one exception), no
+  global installs, nothing on `banned_cmds`. The one exception: the owner pushes after the
+  human says so for that job.
+- Only the owner commits, only on a `foreman/<job-id>` branch, and only the owner merges into
+  the base branch, after a checker PASS.
+- Nobody starts servers or background processes: no dev servers, no `nohup`, no `setsid`, no
+  trailing `&`. The only live server allowed is one the verify command starts and stops itself.
+- Never edit files under `acceptance_tests` or `protected_paths`. A test you think is wrong is
+  something you report, not something you edit.
+- Cap every ad-hoc probe: `timeout 120 <command>`.
+- A command that is denied or blocked is final: record it, do not retry it in another form.
+- Permission prompts belong to the human. Never answer or type into another seat's prompt, and
+  never use `rig send --dangerously-interact`. Tell the owner which seat is stuck.
+- Never print, copy or commit secrets. If you see one, report its path, not its value.
+- No paid model or provider calls and no live systems in checks, unless the task allows it.

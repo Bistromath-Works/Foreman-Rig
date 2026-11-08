@@ -1,9 +1,9 @@
 # Seeing what the crew did: Langfuse
 
 [Langfuse](https://langfuse.com) records every model call each seat makes: the prompt, the
-reply, tool calls, tokens and cost, grouped by seat and session. With a crew of seven or eight
-agents, it is the only way to answer "who spent what, and where did that job go sideways?"
-without reading eight terminal scrollbacks.
+reply, tool calls, tokens and cost, grouped by seat and session. It is the
+easiest way to answer "who spent what, and where did that job go sideways?" without reading
+terminal scrollbacks.
 
 Tracing is **optional** and **off** until you turn it on, and it is scoped to one project's
 crew, so nothing else you run on the machine gets traced.
@@ -102,7 +102,7 @@ If you use a password manager CLI, export the keys from it instead of typing the
 
 ## Is it working?
 
-Give the lead a small job (the [smoke test](testing.md) is ideal), then open your Langfuse
+Give the owner a small job (the [smoke test](testing.md) is ideal), then open your Langfuse
 project's **Tracing** page: you should see traces from each seat that has worked. Or ask the API:
 
 ```bash
