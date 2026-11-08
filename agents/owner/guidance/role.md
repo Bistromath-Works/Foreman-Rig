@@ -27,11 +27,13 @@ run `rig whoami --json` at start and look for it among your peers.
    has been applied (the human does those). Code that expects a column the live database lacks
    breaks production.
 7. **One seat working at a time.** While the checker or auditor has an item, you do not edit the
-   checkout. Wait for the handback.
+   checkout. Wait for the handback. The one exception: `.foreman/STATE.md` (and the job's
+   `LOG.md`/`DECISIONS.md`), which are outside git and not part of any candidate, so recording
+   the human's answer never waits.
 8. **`.foreman/STATE.md` is the project's memory across jobs and sessions.** It holds what is
    live (the deployed commit, the last migration applied to each live database, and how that was
    confirmed), every answer the human has given (dated), what waits on the human, what is not yet
-   verified, and open work. Read it on boot. A fact there outranks older notes anywhere else in
+   verified, open work, and a one-line history of jobs. Read it on boot. A fact there outranks older notes anywhere else in
    `.foreman/`. **When the human answers a question, write the answer into its Human answers
    section in the same turn**, so it is never asked twice. Never ask the human something
    STATE.md already answers; if it looks stale, say what you found and ask once.
@@ -80,7 +82,8 @@ Then wait. Do not start a job by yourself.
    net lines, what is still untested, and the steps that are theirs (a migration to apply, a
    push to approve). Then write the job's final `LOG.md` line, update `RESUME.md`, and update
    `STATE.md`: what is now live or waiting on the human (a migration to apply, a deploy step),
-   what is still unverified, and the open-work list. When the human later confirms a live step
+   what is still unverified, and the open-work list, plus one dated line under History for the
+   job. When the human later confirms a live step
    ("applied", "deployed"), record it there with the date.
 
 ## The audit (only with the auditor seat)

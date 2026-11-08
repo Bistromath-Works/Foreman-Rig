@@ -64,7 +64,7 @@ Tell the owner: `build the job in SPEC.md`.
 - `main` has a merge commit, `node --test` passes, and `test/acceptance/` is unchanged
   (`git diff HEAD~1 -- test/acceptance` is empty).
 - `.foreman/jobs/<job-id>/` holds `SPEC.md`, the brief, the verdict, `LOG.md` and `RESUME.md`,
-  and none of it is in git. `.foreman/STATE.md` lists the job under open work or history.
+  and none of it is in git. `.foreman/STATE.md` has a dated History line for the job.
 - Nobody asked you anything except the owner, and the owner asked at most once (to confirm the
   job). A slugify job has no big decisions and no domain questions.
 - With tracing on: traces from every seat that worked, tagged `foreman-smoke-test`.

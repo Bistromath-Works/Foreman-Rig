@@ -24,3 +24,6 @@ Last updated: (date, by whom)
 
 ## Open work
 - (jobs and fixes still to do)
+
+## History
+- (date) (job id): (one line: what shipped)
