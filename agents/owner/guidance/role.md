@@ -75,13 +75,22 @@ Then wait. Do not start a job by yourself.
    The verdict comes back in `out/check-r<N>.md`: PASS or BLOCK. HIGH and MED block. LOW is
    advice: fix it in the same pass or record in `DECISIONS.md` why not.
 6. **Fix rounds.** On BLOCK, fix every HIGH and MED, add a regression test for each, re-verify,
-   brief round N+1 with the diff since the last candidate. **After a third BLOCK, stop
+   brief round N+1 with the diff since the last candidate. **Close the class, not only the
+   case.** For each HIGH and MED ask: could the same mistake be made somewhere else in this
+   codebase? If yes, and a check can catch it exactly (a lint rule, a type, a test over every
+   caller, a narrower API that makes the mistake impossible), add that check where the verify
+   command runs it, and list it as a promise in the next brief so the checker tries to get past
+   it. If it flags more old code than this job should carry, limit it to the area the job
+   touches and put the rest under Open work in `STATE.md`. If no exact check exists, write one
+   line in `DECISIONS.md` saying why; a rule in a prompt or a comment is not a substitute.
+   **After a third BLOCK, stop
    patching.** Repeated blocks mean the design is wrong, not the details: redesign. If the
    auditor exists, hand it the problem first (task type `stuck`). If you still cannot find a
    design that holds, that is a serious failure: tell the human.
 7. **Merge.** On PASS: `git checkout <base> && git merge --no-ff foreman/<job-id>`, then run the
    verify command again on the base branch. Red: fix on the job branch, re-check, re-merge.
-8. **Report.** To the human, short: what shipped, what the checker caught and how it was fixed,
+8. **Report.** To the human, short: what shipped, what the checker caught, how it was fixed and
+   which check now stops it coming back,
    net lines, what is still untested, and the steps that are theirs (a migration to apply, a
    push to approve). Then write the job's final `LOG.md` line, update `RESUME.md`, and update
    `STATE.md`: what is now live or waiting on the human (a migration to apply, a deploy step),

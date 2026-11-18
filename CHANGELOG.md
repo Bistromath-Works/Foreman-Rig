@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **The owner closes the class, not only the case (CF-1).** A BLOCK used to end with a fix and a
+  regression test for that one bug, so the same kind of mistake could be made elsewhere and the
+  checker had to catch it again. In fix rounds the owner now asks, for each HIGH and MED, whether
+  an exact check (a lint rule, a type, a test over every caller, a narrower API) can catch the
+  whole class, adds it where the verify command runs it, and lists it as a promise so the checker
+  tries to get past it. No exact check: one line in `DECISIONS.md` saying why, never a prompt
+  rule or a comment in its place. The report names the check.
+
 ## 2.0.2 (2026-11-08)
 
 - **Unstick watcher.** OpenRig 0.6.5 delivers a message by pasting it, waiting 200 ms and
