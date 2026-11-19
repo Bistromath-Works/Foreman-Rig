@@ -9,3 +9,4 @@ jobs:
         with:
           node-version: 22
       - run: bash tests/run.sh
+      - run: bash tests/qa.sh

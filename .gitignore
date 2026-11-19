@@ -2,3 +2,5 @@
 rig.*.yaml
 !rig.template.yaml
 *.tmp
+# Each operator's QA settings per repo stay local.
+qa/repos/

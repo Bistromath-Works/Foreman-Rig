@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# Tests for scripts/qa: every verdict on a fixture repo with one planted bug, plus the rules
+# that keep a seat from cheating (gate order, write-once results, contract checks, read-only
+# source). No OpenRig, no models: the seats' outputs are written by hand.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QA="$ROOT/scripts/qa"
+T="$(mktemp -d)" && [ -d "$T" ] || { echo "cannot make a temp folder" >&2; exit 1; }
+trap 'rm -rf "$T"' EXIT
+export QA_HOME="$T/home" QA_REPOS="$T/repos"
+mkdir -p "$QA_HOME" "$QA_REPOS"
+pass=0; failn=0
+ok()   { pass=$((pass+1)); printf 'ok   %s\n' "$1"; }
+bad()  { failn=$((failn+1)); printf 'FAIL %s\n' "$1"; [ -z "${2:-}" ] || printf '     %s\n' "$2"; }
+same() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "want '$3', got '$2'"; fi; }
+
+# --- fixture repo: name.py joins names with a double space when the middle name is empty ---
+R="$T/fixture"; mkdir -p "$R/tests" && cd "$R" || { echo "cannot enter $R" >&2; exit 1; }
+git init -q -b main; git config user.email t@t; git config user.name t
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return f"{first} {middle} {last}"
+PY
+cat > tests/test_basic.py <<'PY'
+import sys; sys.path.insert(0, ".")
+from name import full_name
+assert full_name("Ada", "B", "Lovelace") == "Ada B Lovelace"
+PY
+git add -A; git commit -qm base
+BASE="$(git rev-parse HEAD)"
+
+repro='import sys; sys.path.insert(0, ".")
+from name import full_name
+assert full_name("Ada", "", "Lovelace") == "Ada Lovelace", full_name("Ada", "", "Lovelace")'
+
+branch() { git -C "$R" checkout -q -b "$1" "$BASE"; }
+commit() { git -C "$R" add -A; git -C "$R" commit -qm "$1"; git -C "$R" checkout -q main; }
+
+# good: a real fix plus the repro check
+branch good
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+printf '%s\n' "$repro" > tests/test_empty_middle.py; commit good
+# noop: the "fix" changes nothing that matters
+branch noop
+printf '# handles empty middle names\n' >> name.py
+printf '%s\n' "$repro" > tests/test_empty_middle.py; commit noop
+# norepro: the check tests behavior that already worked on base
+branch norepro
+printf '%s\n' "$(cat name.py)" "# touched" > name.py.new; mv name.py.new name.py
+printf '%s\n' 'import sys; sys.path.insert(0, ".")' 'from name import full_name' 'assert full_name("Ada", "B", "Lovelace") == "Ada B Lovelace"' > tests/test_empty_middle.py; commit norepro
+# weak: the check fails on base only because a new test file is missing; it never tests the fix
+branch weak
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+touch tests/marker
+printf '%s\n' 'import os' 'assert os.path.exists("tests/marker")' > tests/test_empty_middle.py; commit weak
+# importerr: the check fails on base only because it imports a module the fix adds
+branch importerr
+printf 'def join(*p):\n    return " ".join(x for x in p if x)\n' > joiner.py
+printf 'from joiner import join\ndef full_name(first, middle, last):\n    return join(first, middle, last)\n' > name.py
+printf '%s\n' 'import sys; sys.path.insert(0, ".")' 'from joiner import join' 'assert join("Ada", "", "Lovelace") == "Ada Lovelace"' > tests/test_empty_middle.py; commit importerr
+git -C "$R" checkout -q main
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+
+cat > "$QA_REPOS/fixture.json" <<'JSON'
+{
+  "setup_cmd": "",
+  "boot_cmd": "python3 -c 'import name'",
+  "check_cmd": "python3 {check}",
+  "assertion_pattern": "AssertionError",
+  "suite_cmd": "for f in tests/test_*.py; do python3 \"$f\" || exit 1; done",
+  "smoke_cmd": "echo smoke > \"$QA_EVIDENCE/smoke.txt\"",
+  "mutation_cmd": "",
+  "teardown_cmd": "touch \"$QA_RUN/torn-down\"",
+  "test_paths": ["tests/"]
+}
+JSON
+
+contract() { # contract <candidate> [repro_check] [wall_minutes]
+  jq -n --arg r "$R" --arg b "$BASE" --arg c "$1" --arg k "${2-tests/test_empty_middle.py}" --argjson w "${3:-10}" \
+    '{repo:$r, base:$b, candidate:$c, issue:"CF-99", done_condition:"An empty middle name gives one space between first and last name.",
+      repro_check:$k, budget:{wall_minutes:$w, tokens:1000}, reply_to:"crew-owner@foreman-fixture"}' > "$T/c.json"
+  printf '%s' "$T/c.json"
+}
+
+good_probe() { mkdir -p "$1/probe/tests/probe"; printf '%s\n' 'import sys; sys.path.insert(0, ".")' 'from name import full_name' 'assert full_name("", "", "Lovelace") == "Lovelace"' > "$1/probe/tests/probe/test_only_last.py"; }
+bad_probe()  { mkdir -p "$1/probe/tests/probe"; printf '%s\n' 'import sys; sys.path.insert(0, ".")' 'from name import full_name' 'assert full_name(" Ada", "", "Lovelace") == "Ada Lovelace"' > "$1/probe/tests/probe/test_trim.py"; }
+
+# What the gatekeeper does, with the seats' outputs supplied: $2 = good|bad|none probe, $3 = audit line.
+full_run() {
+  local id="$1" probe="$2" audit="$3" run="$QA_HOME/runs/$1" g s
+  for g in boot red green mutation probe suite audit; do
+    [ "$g" != probe ] || case "$probe" in good) good_probe "$run" ;; bad) bad_probe "$run" ;; esac
+    [ "$g" != audit ] || [ -z "$audit" ] || printf '%s\nnotes\n' "$audit" > "$run/audit.md"
+    "$QA" gate "$id" "$g" >/dev/null 2>&1
+    s="$(jq -r .status "$run/gates/$g.json" 2>/dev/null)"
+    case "$s" in pass|skip) ;; *) break ;; esac
+  done
+  "$QA" verdict "$id" >/dev/null 2>&1
+  jq -r '.verdict + " " + (.gate // "-")' "$run/verdict.json"
+}
+
+new() { "$QA" new "$1" 2>&1 | tail -1; }
+
+echo "# verdicts"
+id="$(new "$(contract good)")";    same "real fix -> pass"                   "$(full_run "$id" good 'coverage: covered')" "pass -"
+run="$QA_HOME/runs/$id"
+[ -f "$run/evidence/smoke.txt" ] && ok "smoke command wrote evidence" || bad "smoke command wrote evidence"
+[ -f "$run/torn-down" ] && ok "teardown ran after boot" || bad "teardown ran after boot"
+[ ! -e "$run/src" ] && ok "clones deleted after the verdict" || bad "clones deleted after the verdict"
+grep -q '^verdict: pass' "$run/verdict.md" && grep -q 'audit | pass' "$run/verdict.md" && ok "verdict.md has the verdict and gate table" || bad "verdict.md has the verdict and gate table"
+id="$(new "$(contract noop)")";    same "fix that does nothing -> fail at green" "$(full_run "$id" good 'coverage: covered')" "fail green"
+id="$(new "$(contract norepro)")"; same "check passes on base -> cannot_reproduce" "$(full_run "$id" good 'coverage: covered')" "cannot_reproduce red"
+id="$(new "$(contract weak)")";    same "check survives the fix reversed -> narrowed" "$(full_run "$id" good 'coverage: covered')" "narrowed mutation"
+id="$(new "$(contract good)")";    same "auditor finds a gap -> narrowed" "$(full_run "$id" good 'coverage: narrowed')" "narrowed audit"
+id="$(new "$(contract good)")";    same "probe check fails -> fail at probe" "$(full_run "$id" bad 'coverage: covered')" "fail probe"
+id="$(new "$(contract good)")";    same "prober wrote nothing -> fail at probe" "$(full_run "$id" none 'coverage: covered')" "fail probe"
+id="$(new "$(contract good)")";    same "no audit file -> fail at audit" "$(full_run "$id" good '')" "fail audit"
+id="$(new "$(contract good '')")"; same "no repro check -> red/green skipped, still gated" "$(full_run "$id" good 'coverage: covered')" "pass -"
+id="$(new "$(contract importerr)")"; same "check only errors on base -> fail at red" "$(full_run "$id" good 'coverage: covered')" "fail red"
+id="$(new "$(contract good)")";    same "audit first line not exact -> fail at audit" "$(full_run "$id" good 'I could not finish; example: coverage: covered')" "fail audit"
+id="$(new "$(contract good)")"; ln -s /etc/hostname "$QA_HOME/runs/$id/probe/link.py"
+same "symlink in probe folder -> fail at probe" "$(full_run "$id" good 'coverage: covered')" "fail probe"
+id="$(new "$(contract good)")"; echo $(( $(date +%s) - 1 )) > "$QA_HOME/runs/$id/deadline"
+same "budget spent -> budget_exceeded" "$(full_run "$id" good 'coverage: covered')" "budget_exceeded boot"
+
+id="$(new "$(contract good)")"; mkdir -p "$QA_HOME/runs/$id/probe/tests"; printf 'pass\n' > "$QA_HOME/runs/$id/probe/tests/test_empty_middle.py"
+same "probe check replacing a candidate file -> fail at probe" "$(full_run "$id" none 'coverage: covered')" "fail probe"
+jq '.setup_cmd = "exit 3"' "$QA_REPOS/fixture.json" > "$T/s.json" && cp "$QA_REPOS/fixture.json" "$T/keep.json" && cp "$T/s.json" "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; same "setup command fails -> fail at boot" "$(full_run "$id" good 'coverage: covered')" "fail boot"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+
+id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1; echo $(( $(date +%s) - 1 )) > "$QA_HOME/runs/$id/deadline"
+"$QA" sweep >/dev/null 2>&1
+same "sweep finalizes an abandoned run" "$(jq -r '.verdict + " " + .gate' "$QA_HOME/runs/$id/verdict.json" 2>/dev/null)" "budget_exceeded red"
+[ ! -e "$QA_HOME/runs/$id/src" ] && ok "sweep cleans up the abandoned run" || bad "sweep cleans up the abandoned run"
+
+# brackets: a Next.js-style [id] folder in the repro check's path
+branch brackets
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+mkdir -p "tests/[id]"; printf '%s\n' "$repro" > "tests/[id]/test_empty_middle.py"; commit brackets
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+id="$(new "$(contract brackets 'tests/[id]/test_empty_middle.py')")"; same "repro check under an [id] folder -> pass" "$(full_run "$id" good 'coverage: covered')" "pass -"
+jq '.issue = "fmn-20261119-0930"' "$(contract good)" > "$T/job.json"
+out="$("$QA" validate "$T/job.json" 2>&1)" && ok "a Foreman job id is accepted as the issue" || bad "a Foreman job id is accepted as the issue" "$out"
+
+echo "# the rules"
+id="$(new "$(contract good)")"; run="$QA_HOME/runs/$id"
+out="$("$QA" gate "$id" green 2>&1)"; [[ "$out" == *"run gate 'boot' first"* ]] && ok "gates run in order" || bad "gates run in order" "$out"
+"$QA" gate "$id" boot >/dev/null
+out="$("$QA" gate "$id" boot 2>&1)"; [[ "$out" == *"already ran"* ]] && ok "a gate never re-runs" || bad "a gate never re-runs" "$out"
+id2="$(new "$(contract noop)")"; for g in boot red green; do "$QA" gate "$id2" $g >/dev/null 2>&1; done
+out="$("$QA" gate "$id2" mutation 2>&1)"; [[ "$out" == *"did not pass"* ]] && ok "nothing runs after a failed gate" || bad "nothing runs after a failed gate" "$out"
+"$QA" verdict "$id2" >/dev/null 2>&1; out="$("$QA" verdict "$id2" 2>&1)"; [[ "$out" == *"already written"* ]] && ok "verdict is written once" || bad "verdict is written once" "$out"
+"$QA" verdict "$id" >/dev/null 2>&1; same "skipping the remaining gates is a failure" "$(jq -r '.verdict + " " + .gate' "$run/verdict.json")" "fail red"
+id="$(new "$(contract good)")"; good_probe "$QA_HOME/runs/$id"
+out="$("$QA" try "$id" tests/probe/test_only_last.py 2>&1)"; [[ "$out" == *"exit 0"* ]] && ok "prober can try a check" || bad "prober can try a check" "$out"
+[ ! -e "$QA_HOME/runs/$id/gates/probe.json" ] && ok "trying a check records nothing" || bad "trying a check records nothing"
+same "source repo untouched by every run" "$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)" "$SRC_STATE"
+
+echo "# contracts"
+c="$(contract good)"
+for pair in 'issue|"cf 9"' 'issue|"../x"' 'repro_check|"tests/x.py; rm -rf ~"' 'repro_check|"../outside.py"' 'candidate|"main; reboot"' 'reply_to|"nobody"' 'repo|"--upload-pack=x"' 'budget|{"wall_minutes":0,"tokens":1}'; do
+  k="${pair%%|*}"; v="${pair#*|}"
+  jq --arg k "$k" --argjson v "$v" '.[$k] = $v' "$c" > "$T/bad.json"
+  out="$("$QA" validate "$T/bad.json" 2>&1)" && bad "refuses bad $k: $v" || ok "refuses bad $k: $v"
+done
+out="$("$QA" validate "$ROOT/qa/contract.example.json" 2>&1)" && ok "example contract is valid" || bad "example contract is valid" "$out"
+jq '.repo = "/nowhere/unknown-repo"' "$c" > "$T/unk.json"
+out="$("$QA" new "$T/unk.json" 2>&1)"; [[ "$out" == *"no QA settings"* ]] && ok "unknown repo refused" || bad "unknown repo refused" "$out"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"; jq '.suite_cmd = ""' "$T/keep.json" > "$QA_REPOS/fixture.json"
+out="$("$QA" new "$c" 2>&1)"; [[ "$out" == *"suite commands are required"* ]] && ok "repo without a suite command refused" || bad "repo without a suite command refused" "$out"
+jq '.assertion_pattern = ""' "$T/keep.json" > "$QA_REPOS/fixture.json"
+out="$("$QA" new "$(contract good)" 2>&1)"; [[ "$out" == *"no assertion_pattern"* ]] && ok "repro check without an assertion pattern refused" || bad "repro check without an assertion pattern refused" "$out"
+jq '.check_cmd = "python3 {check} # AssertionError"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract importerr)")"; same "pattern in the command line does not count" "$(full_run "$id" good 'coverage: covered')" "fail red"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+
+echo "# merge gate"
+"$QA" hook "$R" on >/dev/null
+same "hook reports on" "$("$QA" hook "$R" status)" "on"
+git -C "$R" branch -q foreman/job-good good; git -C "$R" branch -q foreman/job-noop noop
+GOOD="$(git -C "$R" rev-parse good)"
+"$QA" passed "$GOOD" >/dev/null && ok "an earlier run passed the good commit" || bad "an earlier run passed the good commit"
+out="$(git -C "$R" merge -q --no-ff -m m foreman/job-noop 2>&1)"; [[ "$out" == *"merge refused"* ]] && ok "merge of a foreman/ branch without a QA pass refused" || bad "merge of a foreman/ branch without a QA pass refused" "$out"
+git -C "$R" merge --abort 2>/dev/null; git -C "$R" reset -q --hard main
+git -C "$R" merge -q --no-ff -m m foreman/job-good 2>/dev/null && ok "merge of a QA-passed foreman/ branch allowed" || bad "merge of a QA-passed foreman/ branch allowed"
+git -C "$R" reset -q --hard HEAD~1
+git -C "$R" checkout -q -b foreman/job-later good; echo "# later change" >> "$R/name.py"; git -C "$R" commit -qam later; git -C "$R" checkout -q main
+out="$(git -C "$R" merge -q --no-ff -m m foreman/job-later 2>&1)"; [[ "$out" == *"merge refused"* ]] && ok "a commit changed after QA needs QA again" || bad "a commit changed after QA needs QA again" "$out"
+git -C "$R" merge --abort 2>/dev/null; git -C "$R" reset -q --hard main
+git -C "$R" checkout -q -b human main; echo "notes" > "$R/NOTES.md"; git -C "$R" add NOTES.md; git -C "$R" commit -qm notes; git -C "$R" checkout -q main
+git -C "$R" merge -q --no-ff -m m human 2>/dev/null && ok "merges of other branches are left alone" || bad "merges of other branches are left alone"
+git -C "$R" reset -q --hard main~0 2>/dev/null; git -C "$R" reset -q --hard HEAD^1
+out="$(git -C "$R" merge -q --no-ff -m m noop 2>&1)"; [[ "$out" == *"merge refused"* ]] && ok "a foreman/ commit under another branch name is still gated" || bad "a foreman/ commit under another branch name is still gated" "$out"
+git -C "$R" merge --abort 2>/dev/null; git -C "$R" reset -q --hard main
+"$QA" hook "$R" off >/dev/null; same "hook reports off" "$("$QA" hook "$R" status)" "off"
+
+echo "# sending"
+mkdir -p "$T/bin"; cat > "$T/bin/rig" <<'SH'
+#!/bin/sh
+case "$1" in
+  ps) echo '[{"nodes":[{"session":"crew-owner@foreman-fixture"}]}]' ;;
+  queue) echo "$@" >> "$QA_HOME/queued.log" ;;
+esac
+SH
+chmod +x "$T/bin/rig"
+c="$(contract good)"
+out="$(PATH="$T/bin:$PATH" "$QA" send "$c" 2>&1)"; [[ "$out" == *"queued for qa-gatekeeper@"* ]] && grep -q -- '--destination qa-gatekeeper@' "$QA_HOME/queued.log" && ok "send queues a contract for the gatekeeper" || bad "send queues a contract for the gatekeeper" "$out"
+jq '.reply_to = "nobody@nowhere"' "$c" > "$T/r.json"
+out="$(PATH="$T/bin:$PATH" "$QA" send "$T/r.json" 2>&1)"; [[ "$out" == *"not a seat OpenRig knows"* ]] && ok "send refuses an unknown reply seat" || bad "send refuses an unknown reply seat" "$out"
+
+echo
+echo "$pass passed, $failn failed"
+[ "$failn" -eq 0 ]
