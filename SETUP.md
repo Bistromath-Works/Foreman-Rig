@@ -2,7 +2,7 @@
 
 You are a coding agent (Claude Code, Codex or similar) helping a person set up Foreman for one of
 their git repositories. Foreman is an **OpenRig setup**: two agent seats, an owner and a checker
-(three with the optional auditor), that OpenRig launches in separate terminals. It is not a skill and nothing gets installed into your own runtime.
+(plus an optional auditor and an optional coder), that OpenRig launches in separate terminals. It is not a skill and nothing gets installed into your own runtime.
 
 The person may not be comfortable in a terminal. You run the commands; they make the decisions.
 
@@ -54,8 +54,13 @@ eyes when a job is stuck; it should be a different model family from the other t
 costs little because it runs rarely. Without it, audits happen only when the person asks, and
 stuck jobs come to the person.
 
+Ask: **"Do you want the optional coder seat?"** (default: no). Explain in one line: a smaller,
+cheaper model (often a local one) writes the small, fully specified pieces of code, while the
+owner plans, reviews every line of it and commits. It only makes sense if they have such a
+model running; see `docs/models.md`, "The coder".
+
 ```bash
-"$FOREMAN/scripts/foreman" init "$PROJECT"            # add --auditor if they want it
+"$FOREMAN/scripts/foreman" init "$PROJECT"            # add --auditor and/or --coder if they want them
 ```
 
 This writes `FOREMAN/rig.<name>.yaml` (the crew) and `PROJECT/.foreman/project.yaml` (project
@@ -174,7 +179,7 @@ whatever it reports and run it again until it says `check passed`.
 
 ## 7. Launch
 
-Ask: **"Ready to launch the crew? Two agents (three with the auditor) will start in the background."** Then:
+Ask: **"Ready to launch the crew? Two agents (plus the auditor and the coder, if chosen) will start in the background."** Then:
 
 ```bash
 "$FOREMAN/scripts/foreman" up "$PROJECT"

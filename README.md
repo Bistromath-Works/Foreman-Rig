@@ -3,8 +3,8 @@
 ### Or: How to Get Two Artificial Minds to Build Something Without Diffusing the Blame
 
 > **Foreman is an [OpenRig](https://www.openrig.dev) setup, not a skill.** There is nothing to
-> install into Claude Code or Codex. You launch it with OpenRig as two agents (three with the
-> optional auditor), each in its own terminal, pointed at your own git repository, with optional
+> install into Claude Code or Codex. You launch it with OpenRig as two agents (plus an optional
+> auditor and an optional coder), each in its own terminal, pointed at your own git repository, with optional
 > [Langfuse](https://langfuse.com) tracing so you can see what each of them did.
 
 Foreman 1 put seven agents on a job site: a lead who never touched the work, an architect who
@@ -82,7 +82,7 @@ or [Pi](https://github.com/earendil-works/pi), logged in.
 git clone https://github.com/Bistromath-Works/Foreman-Rig ~/foreman
 cd ~/foreman
 
-scripts/foreman init ~/code/my-app            # add --auditor for the optional third seat
+scripts/foreman init ~/code/my-app            # optional seats: --auditor, --coder
 # fill in every SET-ME in the two files it names: rig.my-app.yaml and ~/code/my-app/.foreman/project.yaml
 scripts/foreman check ~/code/my-app           # refuses until nothing is SET-ME, then validates with OpenRig
 scripts/foreman tracing ~/code/my-app         # optional: Langfuse tracing (keys from env, see below)
@@ -145,7 +145,7 @@ a contract file and get a verdict back. See [qa/README.md](qa/README.md).
 ```
 README.md               you are here
 SETUP.md                setup instructions written for an AI agent to follow
-rig.template.yaml       the crew: owner, checker and the optional auditor, every runtime and model SET-ME
+rig.template.yaml       the crew: owner, checker, the optional auditor and coder, every runtime and model SET-ME
 project.template.yaml   per-project settings: base branch, verify command, protected paths, banned commands, audit cadence
 state.template.md       the starting STATE.md: the crew's memory across jobs (live systems, your answers, open work)
 CULTURE.md              rules every seat follows

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Foreman setup helper for OpenRig.
 #
-#   scripts/foreman init    <project> [--auditor] create rig.<name>.yaml + <project>/.foreman/project.yaml
+#   scripts/foreman init    <project> [--auditor] [--coder]   create rig.<name>.yaml + <project>/.foreman/project.yaml
 #   scripts/foreman check   <project>            refuse while any SET-ME is left; validate with OpenRig
 #   scripts/foreman up      <project>            check, prepare the project, launch the crew
 #   scripts/foreman down    <project>            stop the crew
@@ -20,7 +20,8 @@ EXCLUDES=(.foreman/ .openrig/ .claude/ .codex/ .agents/ .pi/ .mcp.json CLAUDE.lo
 # Of those (plus AGENTS.md), the ones OpenRig may write into. If the project tracks files there,
 # they are marked skip-worktree so OpenRig's additions never show up in git status or commits.
 OPENRIG_WRITES=(.claude/ .codex/ .agents/ .pi/ .mcp.json CLAUDE.local.md AGENTS.md)
-SEATS=(owner checker)   # the auditor is optional
+SEATS=(owner checker)
+OPTIONAL_SEATS=(auditor coder)   # kept by `init --<seat>`
 PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_paths banned_cmds audit_every)
 
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
@@ -75,10 +76,10 @@ members() {
 # --- init ---------------------------------------------------------------------------------
 
 cmd_init() {
-  local auditor=0 arg project=""
+  local arg project="" seat keep=" "
   for arg in "$@"; do
     case "$arg" in
-      --auditor) auditor=1 ;;
+      --auditor|--coder) keep="$keep${arg#--} " ;;
       -*) die "unknown option: $arg" ;;
       *) [ -z "$project" ] || die "init takes one project path"; project="$arg" ;;
     esac
@@ -87,18 +88,21 @@ cmd_init() {
   if [ -f "$RIG_FILE" ]; then
     require_rig_file
     say "kept existing $RIG_FILE"
-    [ "$auditor" -eq 0 ] || say "note: --auditor ignored because the file already exists; delete the file and run init --auditor again (it has no secrets, only your model choices)"
+    for seat in $keep; do
+      say "note: --$seat ignored because the file already exists; delete the file and run init --$seat again (it has no secrets, only your model choices)"
+    done
   else
     {
       printf '# project: %s\n' "$PROJECT"
       sed "s/^name: SET-ME$/name: $RIG_NAME/" "$TEMPLATE"
     } > "$RIG_FILE.tmp"
-    if [ "$auditor" -eq 0 ]; then
-      sed -i.bak '/--- auditor (optional)/,/--- end auditor ---/d; /auditor edge:/d' "$RIG_FILE.tmp"
+    for seat in "${OPTIONAL_SEATS[@]}"; do
+      case "$keep" in *" $seat "*) continue ;; esac
+      sed -i.bak "/--- $seat (optional)/,/--- end $seat ---/d; /$seat edge:/d" "$RIG_FILE.tmp"
       rm -f "$RIG_FILE.tmp.bak"
-    fi
+    done
     mv "$RIG_FILE.tmp" "$RIG_FILE"
-    say "wrote $RIG_FILE (rig name $RIG_NAME$( [ "$auditor" -eq 1 ] && echo ', with the auditor'))"
+    say "wrote $RIG_FILE (rig name $RIG_NAME$(for seat in $keep; do printf ', with the %s' "$seat"; done))"
   fi
   mkdir -p "$PROJECT/.foreman"
   if [ -f "$PROJECT_FILE" ]; then
@@ -152,7 +156,7 @@ cmd_check() {
   done < <(members)
   for seat in "${SEATS[@]}"; do
     found="$(members | awk -v s="$seat" '$1 == s' )"
-    [ -n "$found" ] || problems+=("rig file: seat '$seat' is missing (only the auditor is optional)")
+    [ -n "$found" ] || problems+=("rig file: seat '$seat' is missing (only the auditor and the coder are optional)")
   done
   grep -q '^name: SET-ME' "$RIG_FILE" && problems+=("rig file: name is still SET-ME")
   # The owner writes STATE.md while the checker reviews, so it must never be part of a commit.

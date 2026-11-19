@@ -36,6 +36,7 @@ change fast.
 | **owner** | The strongest coder you can afford, with a long context: it reads the area, plans, builds, keeps the ledger. Follows the role's rules without improvising around them. | Highest | `claude-code` Opus 5.5. Eleven jobs on a real app; found defects two audits had missed. Weak spot: concurrency and silent fallbacks, which is why the checker matters. |
 | **checker** | A **different family from the owner**, strong at systems and security, willing to write probe scripts and drive real handlers against a real local database. Calibrated: zero noise matters more than volume. | High | `codex` GPT-6 Astra. 19 check rounds over 11 jobs: 4 HIGH and 6 MED defects in the owner's code (counted once each; findings the checker later moved out of a job's scope are not counted), and none of them turned out to be false alarms. In an earlier planted-bug bake-off it had the best severity calls. |
 | **auditor** *(optional)* | Broad judgement and a **third family** if you can. Rarely runs, so it can be expensive. | High, rarely | `pi` Gemini 4 Argon via OpenRouter (as the Foreman 1 muse; smoke-tested). |
+| **coder** *(optional)* | Small and fast, reliable with tools, good at a short task that is fully spelled out. It does not need to plan. A local model fits. | Lowest (free if local) | `pi` Qwen3.8-27B on a local vLLM server. See "The coder" below. |
 
 ## Example crews
 
@@ -46,6 +47,7 @@ change fast.
 | owner | claude-code | claude-opus-5-5 |
 | checker | codex | gpt-6-astra |
 | auditor *(with `--auditor`)* | pi | openrouter/google/gemini-4-argon |
+| coder *(with `--coder`)* | pi | vllm/qwen3.8-27b |
 
 **One subscription (Anthropic only)**: works, but owner and checker share blind spots.
 
@@ -84,3 +86,43 @@ Off unless you ask for it: `scripts/foreman init <project> --auditor`. Without i
 goes from the owner's redesign straight to you, and whole-repo audits are something you ask for
 by hand. To add it to an existing rig file, delete the file and run `init --auditor` again (the
 file holds only your model choices).
+
+## The coder
+
+Off unless you ask for it: `scripts/foreman init <project> --coder`. It takes the tactical
+coding off the owner: the owner spells out a small piece, the coder writes it, the owner reads
+every line and commits. It pays off when the coder is much cheaper than the owner, which in
+practice means a local model.
+
+**Pick it by measuring, not by name.** We chose ours with a ladder of six small tasks graded by
+hidden tests, three attempts each (18 in all):
+
+| Model, setting | Passed | Speed (one request) |
+|---|---|---|
+| Qwen3.8-27B, thinking low | 14 of 18 | about 34 tokens/s with its draft head |
+| Qwen3.8-27B, thinking off | 12 of 18 | same |
+| Ornith-1.5-35B-A3B, thinking off | 7 of 18 | 76 tokens/s |
+| Ornith-1.5-35B-A3B, thinking on | 5 of 18 | about 50 tokens/s |
+
+One machine, one run each, November 2026. Two things carried over from it into the owner's
+role: the coder's typical miss was one stated rule out of many, so the owner checks every rule;
+and at default settings both models thought for minutes and ran out of tokens on small tasks,
+so set thinking low or off.
+
+**A local model through Pi.** Add the server to `~/.pi/agent/models.json` as a provider (ours is
+called `vllm`, pointing at `http://127.0.0.1:8000/v1`) and use `vllm/<model name>` as the seat's
+model. `scripts/foreman up` links that file into the seat. The server must be running before
+the crew starts, with tool calling switched on. For vLLM and Qwen3.8-27B we run:
+
+```
+--enable-auto-tool-choice --tool-call-parser=qwen3_coder --reasoning-parser=qwen3
+--speculative-config={"method":"mtp","num_speculative_tokens":3}
+--default-chat-template-kwargs={"reasoning_effort":"low"}
+```
+
+The last line makes thinking low the default on the server, so the seat needs no setting of its
+own. Keep the server on loopback unless you have a reason not to.
+
+To add the coder to an existing rig file, delete the file and run `init --coder` again (add
+`--auditor` too if you had it).
+
