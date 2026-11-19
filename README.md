@@ -110,10 +110,19 @@ It is scoped to that one crew, the keys go only into private files git ignores, 
 `--off` takes it all out again. Setup for each runtime's plugin, privacy and "is it working?":
 [docs/observability.md](docs/observability.md).
 
+## The QA rig (optional)
+
+`qa/` is a second, separate rig that receives a candidate from a build rig and tries to break it:
+boot, red on base, green on candidate, mutation, probe, suite, audit. The gates and the verdict
+are code (`scripts/qa`), so no seat can skip a gate or argue a red one green. Build rigs hand it
+a contract file and get a verdict back. See [qa/README.md](qa/README.md).
+
 ## Testing
 
 - `bash tests/run.sh` tests the setup script against stub commands: seconds, no models, no keys.
   CI runs it on every push.
+- `bash tests/qa.sh` tests the QA rig's gates and verdicts on a fixture repo with a planted bug.
+  CI runs it too.
 - `examples/smoke/` is a tiny project with a spec and failing acceptance tests. Point a new
   crew at it to prove the whole flow works with your models before you trust it with your
   own code. [docs/testing.md](docs/testing.md) has the steps and what a pass looks like.
@@ -146,6 +155,10 @@ scripts/foreman         init / check / up / down / tracing
 docs/                   models, how it works, observability, testing, troubleshooting
 examples/smoke/         a tiny job for proving a new crew end to end
 tests/run.sh            tests for scripts/foreman (CI runs them)
+qa/                     the QA rig: a separate rig that tries to break a candidate (qa/README.md)
+agents/qa-*/            the QA rig's seats: gatekeeper, prober, test auditor
+scripts/qa              the QA rig's gates and verdict, in code
+tests/qa.sh             tests for scripts/qa (CI runs them)
 CHANGELOG.md            what changed
 ```
 

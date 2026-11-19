@@ -1,0 +1,10 @@
+{
+  "repo": "/home/you/src/your-repo",
+  "base": "main",
+  "candidate": "foreman/fmn-20261119-0930",
+  "issue": "MNS-42",
+  "done_condition": "Saving a borrower with an empty middle name no longer shows 'Something went wrong'; the record saves and the name shows without a stray space.",
+  "repro_check": "tests/regression/empty-middle-name.test.ts",
+  "budget": { "wall_minutes": 60, "tokens": 300000 },
+  "reply_to": "crew-owner@foreman-your-repo"
+}

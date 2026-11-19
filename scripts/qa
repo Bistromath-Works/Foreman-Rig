@@ -1,0 +1,594 @@
+#!/usr/bin/env bash
+# QA rig helper: the gates and the verdict live here, in code, not in any seat's prompt.
+#
+# Setup (operator):
+#   scripts/qa init                    create rig.qa.yaml (fill in SET-ME) and the QA home folder
+#   scripts/qa repo <name>             create qa/repos/<name>.json, that repo's QA commands
+#   scripts/qa up | down               launch / stop the QA rig
+#   scripts/qa hook <repo> on|off      merge gate: foreman/ branches need a QA pass to merge
+# Build side (the build rig's Lead):
+#   scripts/qa send <contract.json>    validate a contract and queue it for the gatekeeper
+# QA side (the gatekeeper):
+#   scripts/qa new <contract.json>     start a run: check the contract, clone, print the run id
+#   scripts/qa gate <run> <gate>       run one gate: boot red green mutation probe suite audit
+#   scripts/qa try <run> <file>        prober only: run one probe check on a throwaway copy
+#   scripts/qa verdict <run>           compute the verdict from the gate files, clean up the clones
+#   scripts/qa sweep                   finalize runs whose budget ran out with no verdict
+#   scripts/qa passed <commit>         exit 0 if QA passed exactly that commit
+#
+# A gate runs only after every earlier gate passed or was skipped, and runs once: its result
+# file is never overwritten, so a red gate cannot be re-run until it turns green. The verdict
+# reads those files in order; no seat decides it.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QA_HOME="${QA_HOME:-$HOME/.foreman-qa}"
+QA_RIG="${QA_RIG:-foreman-qa}"
+QA_REPOS="${QA_REPOS:-$ROOT/qa/repos}"
+RIG_FILE="$ROOT/rig.qa.yaml"
+GATES=(boot red green mutation probe suite audit)
+REPO_KEYS=(setup_cmd boot_cmd check_cmd suite_cmd smoke_cmd mutation_cmd teardown_cmd)
+
+die() { printf 'qa: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+usage() { sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is not installed"; }
+need jq; need git
+
+# A repo-relative path a contract or the prober may name: no absolute paths, no "..", no shell
+# characters except Next.js-style [id] and (group) folders. Paths reach commands shell-quoted.
+safe_path() { [[ "$1" =~ ^[][A-Za-z0-9_@+()][][A-Za-z0-9._/@+()-]*$ ]] && [[ "/$1/" != */../* ]]; }
+safe_rev()  { [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ ]] && [[ "$1" != *..* ]]; }
+
+# --- the contract -------------------------------------------------------------------------
+
+# Prints every problem with contract $1, one per line; prints nothing if it is valid.
+contract_problems() {
+  local c="$1" v
+  jq -e 'type == "object"' "$c" >/dev/null 2>&1 || { say "not a JSON object"; return; }
+  for v in repo base candidate issue done_condition reply_to; do
+    jq -e --arg k "$v" '.[$k] | type == "string" and length > 0' "$c" >/dev/null \
+      || say "'$v' must be a non-empty string"
+  done
+  jq -e '.repro_check | type == "string"' "$c" >/dev/null || say "'repro_check' must be a string (\"\" if there is none)"
+  jq -e '.budget.wall_minutes | type == "number" and . > 0 and . == floor' "$c" >/dev/null \
+    || say "'budget.wall_minutes' must be a whole number above 0"
+  jq -e '.budget.tokens | type == "number" and . > 0' "$c" >/dev/null || say "'budget.tokens' must be a number above 0"
+  v="$(jq -r '.repo // ""' "$c")"; [[ "$v" != -* ]] || say "'repo' must not start with '-'"
+  v="$(jq -r '.base // ""' "$c")"; [ -z "$v" ] || safe_rev "$v" || say "'base' is not a plain commit or branch name"
+  v="$(jq -r '.candidate // ""' "$c")"; [ -z "$v" ] || safe_rev "$v" || say "'candidate' is not a plain commit or branch name"
+  v="$(jq -r '.issue // ""' "$c")"; [ -z "$v" ] || [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || say "'issue' must be a Linear id like MNS-12 or a job id like fmn-20261119-0930"
+  v="$(jq -r '.reply_to // ""' "$c")"; [ -z "$v" ] || [[ "$v" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$ ]] || say "'reply_to' must be a seat session like crew-owner@my-rig"
+  v="$(jq -r '.repro_check // ""' "$c")"; [ -z "$v" ] || safe_path "$v" || say "'repro_check' must be a plain repo-relative path"
+}
+
+check_contract() {
+  [ -f "$1" ] || die "contract not found: $1"
+  local p; p="$(contract_problems "$1")"
+  [ -z "$p" ] || die "contract $1 is not valid:
+$(printf '%s\n' "$p" | sed 's/^/  - /')"
+}
+
+repo_slug() { basename "${1%/}" .git | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-\n' '-'; }
+repo_file() { printf '%s/%s.json' "$QA_REPOS" "$1"; }
+
+# Value of key $2 in repo settings file $1 ("" if empty or missing).
+rget() { jq -r --arg k "$2" '.[$k] // ""' "$1"; }
+
+# --- runs ---------------------------------------------------------------------------------
+
+run_dir() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || die "not a run id: ${1:-<none>}"
+  local d="$QA_HOME/runs/$1"
+  [ -f "$d/contract.json" ] || die "no run $1 under $QA_HOME/runs"
+  printf '%s' "$d"
+}
+
+# Seconds left in run $1's wall-clock budget (0 or less: spent).
+remaining() { echo $(( $(cat "$1/deadline") - $(date +%s) )); }
+
+# Run shell command $3 in directory $2 for run $1, output to log $4, capped by the budget.
+# Exit status: the command's, or 124 if the budget ran out.
+run_cmd() {
+  local run="$1" dir="$2" cmd="$3" log="$4" left
+  left="$(remaining "$run")"
+  [ "$left" -gt 0 ] || return 124
+  printf '$ %s\n' "$cmd" >>"$log"
+  ( cd "$dir" && QA_RUN="$run" QA_EVIDENCE="$run/evidence" timeout --kill-after=10 "$left" bash -c "$cmd" ) >>"$log" 2>&1
+}
+
+# record <run> <gate> <status> <note> [exit]: write the gate's result file once.
+record() {
+  local f="$1/gates/$2.json"
+  [ ! -e "$f" ] || die "gate $2 already has a result; results are never overwritten"
+  jq -n --arg g "$2" --arg s "$3" --arg n "$4" --argjson e "${5:-null}" --arg at "$(date -u +%FT%TZ)" \
+    '{gate:$g, status:$s, note:$n, exit:$e, log:("logs/" + $g + ".log"), at:$at}' >"$f"
+  say "gate $2: $3${4:+ ($4)}"
+}
+
+status_of() { [ -f "$1/gates/$2.json" ] && jq -r .status "$1/gates/$2.json" || echo missing; }
+
+# A fresh detached worktree of rev $3 at <run>/src/$2, with the repo's setup command run in it.
+# If setup fails, records gate $4 (when given) as failed or out of budget and returns 1.
+tree() {
+  local run="$1" name="$2" rev="$3" gate="${4:-}" setup e=0
+  git -C "$run/src/repo" worktree add --quiet --detach "$run/src/$name" "$rev" >/dev/null 2>&1 \
+    || die "could not check out $rev"
+  setup="$(rget "$run/repo.json" setup_cmd)"
+  [ -n "$setup" ] || return 0
+  run_cmd "$run" "$run/src/$name" "$setup" "$run/logs/setup-$name.log" || e=$?
+  [ "$e" -ne 0 ] || return 0
+  if [ -n "$gate" ]; then
+    if [ "$(outcome "$e" "$run")" = budget ]; then record "$run" "$gate" budget "timed out in setup ($name)" "$e"
+    else record "$run" "$gate" fail "setup command failed in the $name copy (logs/setup-$name.log)" "$e"; fi
+  fi
+  return 1
+}
+
+# Run the repo's check command on one check file in tree $2. Exit: the check's.
+check() {
+  local run="$1" dir="$2" file="$3" log="$4" cmd
+  cmd="$(rget "$run/repo.json" check_cmd)"
+  run_cmd "$run" "$dir" "${cmd//\{check\}/$(printf '%q' "$file")}" "$log"
+}
+
+# Files the candidate changed that are not tests and not the repro check (the fix itself).
+fix_files() {
+  local run="$1" spec=() p
+  while read -r p; do [ -n "$p" ] && spec+=(":(exclude)$p"); done < <(jq -r '.test_paths[]? // empty' "$run/repo.json")
+  p="$(jq -r .repro_check "$run/contract.json")"; [ -z "$p" ] || spec+=(":(exclude)$p")
+  git -C "$run/src/repo" diff --name-only "$(cat "$run/base.sha")" HEAD -- . "${spec[@]}"
+}
+
+cmd_new() {
+  local c="${1:-}"; [ -n "$c" ] || usage
+  check_contract "$c"
+  local repo slug rf id run
+  repo="$(jq -r .repo "$c")"; slug="$(repo_slug "$repo")"; rf="$(repo_file "$slug")"
+  [ -f "$rf" ] || die "no QA settings for repo '$slug'; the operator runs: scripts/qa repo $slug"
+  ! grep -q SET-ME "$rf" || die "$rf still has SET-ME values"
+  local k; for k in boot_cmd check_cmd suite_cmd; do
+    [ -n "$(rget "$rf" "$k")" ] || die "$rf has no $k; boot, check and suite commands are required"
+  done
+  [ -z "$(jq -r .repro_check "$c")" ] || [ -n "$(rget "$rf" assertion_pattern)" ] \
+    || die "$rf has no assertion_pattern; it is required when a contract has a repro check"
+  local n=1 stem; stem="$(jq -r .issue "$c")-$(date +%Y%m%d-%H%M%S)"; id="$stem"
+  mkdir -p "$QA_HOME/runs"
+  until mkdir "$QA_HOME/runs/$id" 2>/dev/null; do n=$((n+1)); id="$stem-$n"; done
+  run="$QA_HOME/runs/$id"
+  mkdir -p "$run"/{gates,logs,evidence,probe,src}
+  cp "$c" "$run/contract.json"; cp "$rf" "$run/repo.json"
+  echo $(( $(date +%s) + 60 * $(jq -r .budget.wall_minutes "$c") )) >"$run/deadline"
+  date +%s >"$run/started"
+  # A private clone; its remote is dropped once base and candidate are resolved.
+  timeout --kill-after=10 "$(remaining "$run")" git clone --quiet --no-hardlinks -- "$repo" "$run/src/repo" >"$run/logs/clone.log" 2>&1 \
+    || die "could not clone $repo (see $run/logs/clone.log)"
+  git -C "$run/src/repo" checkout --quiet --detach "$(jq -r .candidate "$c")" 2>/dev/null \
+    || git -C "$run/src/repo" checkout --quiet --detach "origin/$(jq -r .candidate "$c")" 2>/dev/null \
+    || die "candidate $(jq -r .candidate "$c") not found in $repo"
+  git -C "$run/src/repo" rev-parse "$(jq -r .base "$c")^{commit}" >"$run/base.sha" 2>/dev/null \
+    || die "base $(jq -r .base "$c") not found in $repo"
+  git -C "$run/src/repo" rev-parse HEAD >"$run/candidate.sha"
+  # Read-only from here: drop the remote so nothing can be pushed back.
+  git -C "$run/src/repo" remote remove origin
+  say "$id"
+}
+
+cmd_gate() {
+  local id="${1:-}" gate="${2:-}" run g i=0 found=0
+  run="$(run_dir "$id")"
+  for g in "${GATES[@]}"; do [ "$g" = "$gate" ] && found=1 && break; i=$((i+1)); done
+  [ "$found" -eq 1 ] || die "unknown gate '$gate'; gates in order: ${GATES[*]}"
+  for g in "${GATES[@]:0:$i}"; do
+    case "$(status_of "$run" "$g")" in
+      pass|skip) ;;
+      missing) die "run gate '$g' first (gates run in order: ${GATES[*]})" ;;
+      *) die "gate '$g' did not pass; nothing after it runs. Next: scripts/qa verdict $id" ;;
+    esac
+  done
+  [ ! -e "$run/gates/$gate.json" ] || die "gate $gate already ran: $(jq -r '.status + " " + .note' "$run/gates/$gate.json")"
+  if [ "$(remaining "$run")" -le 0 ]; then record "$run" "$gate" budget "wall-clock budget spent before this gate"; return; fi
+  "gate_$gate" "$run"
+}
+
+# Turn a command's exit into a status. A timeout past the deadline is the budget, not the code.
+outcome() { if [ "$1" -eq 0 ]; then echo ok; elif [ "$(remaining "$2")" -le 0 ]; then echo budget; else echo bad; fi; }
+
+# A failing check counts as red only if its log shows the failure the repo calls an assertion
+# (repo setting assertion_pattern, required when the contract has a repro check), so an import
+# or runner error is not taken as the bug. Only the check's output is searched, not the command.
+red_ok() {
+  local pat; pat="$(rget "$1/repo.json" assertion_pattern)"
+  [ -n "$pat" ] && grep -v '^\$ ' "$2" | grep -Eq -- "$pat"
+}
+
+# Path $2 inside tree $1 stays inside it once symlinks are followed (nothing written outside).
+inside() { local t r; t="$(realpath -m "$1")"; r="$(realpath -m "$1/$2")"; [[ "$r" == "$t"/* ]]; }
+
+
+gate_boot() {
+  local run="$1" cmd e=0 o
+  tree "$run" candidate "$(cat "$run/candidate.sha")" boot || return 0
+  cmd="$(rget "$run/repo.json" boot_cmd)"
+  touch "$run/booted"
+  run_cmd "$run" "$run/src/candidate" "$cmd" "$run/logs/boot.log" || e=$?
+  o="$(outcome "$e" "$run")"
+  case "$o" in ok) record "$run" boot pass "" "$e" ;; budget) record "$run" boot budget "timed out" "$e" ;; *) record "$run" boot fail "boot command failed" "$e" ;; esac
+}
+
+gate_red() {
+  local run="$1" chk e=0 o
+  chk="$(jq -r .repro_check "$run/contract.json")"
+  [ -n "$chk" ] || { record "$run" red skip "contract has no repro check"; return; }
+  [ -f "$run/src/candidate/$chk" ] || { record "$run" red fail "repro check $chk is not in the candidate"; return; }
+  tree "$run" base "$(cat "$run/base.sha")" red || return 0
+  inside "$run/src/base" "$chk" && [ ! -L "$run/src/candidate/$chk" ] \
+    || { record "$run" red fail "repro check path $chk leads outside the checkout (symlink)"; return; }
+  mkdir -p "$(dirname "$run/src/base/$chk")"; cp "$run/src/candidate/$chk" "$run/src/base/$chk"
+  check "$run" "$run/src/base" "$chk" "$run/logs/red.log" || e=$?
+  o="$(outcome "$e" "$run")"
+  case "$o" in
+    bad) if red_ok "$run" "$run/logs/red.log"; then record "$run" red pass "check fails on base, as it should" "$e"
+         else record "$run" red fail "check fails on base, but not with an assertion (assertion_pattern): an import or runner error proves nothing" "$e"; fi ;;
+    ok) record "$run" red no_repro "check passes on base: the bug does not reproduce" "$e" ;;
+    *) record "$run" red budget "timed out" "$e" ;;
+  esac
+}
+
+gate_green() {
+  local run="$1" chk e=0 o
+  chk="$(jq -r .repro_check "$run/contract.json")"
+  [ -n "$chk" ] || { record "$run" green skip "contract has no repro check"; return; }
+  check "$run" "$run/src/candidate" "$chk" "$run/logs/green.log" || e=$?
+  o="$(outcome "$e" "$run")"
+  case "$o" in ok) record "$run" green pass "" "$e" ;; budget) record "$run" green budget "timed out" "$e" ;; *) record "$run" green fail "repro check fails on the candidate" "$e" ;; esac
+}
+
+# 1) Put the bug back (reverse the fix, keep the tests): the repro check must fail again.
+# 2) The repo's mutation tool on the changed files, if it has one; it exits non-zero when too
+#    many mutants survive (Stryker: thresholds.break).
+gate_mutation() {
+  local run="$1" chk files e=0 o cmd notes=() q=()
+  chk="$(jq -r .repro_check "$run/contract.json")"
+  mapfile -t files < <(fix_files "$run")
+  if [ -n "$chk" ] && [ "${#files[@]}" -gt 0 ]; then
+    tree "$run" mutant "$(cat "$run/candidate.sha")" mutation || return 0
+    git -C "$run/src/repo" --literal-pathspecs diff "$(cat "$run/base.sha")" HEAD -- "${files[@]}" \
+      | git -C "$run/src/mutant" apply -R --whitespace=nowarn 2>>"$run/logs/mutation.log" \
+      || { record "$run" mutation fail "could not reverse the fix to re-apply the bug" ; return; }
+    check "$run" "$run/src/mutant" "$chk" "$run/logs/mutation.log" || e=$?
+    o="$(outcome "$e" "$run")"
+    case "$o" in
+      ok) record "$run" mutation fail "repro check still passes with the fix reversed: it does not test the fix" "$e"; return ;;
+      budget) record "$run" mutation budget "timed out" "$e"; return ;;
+    esac
+    red_ok "$run" "$run/logs/mutation.log" \
+      || { record "$run" mutation fail "with the fix reversed the check errors instead of failing an assertion (assertion_pattern)" "$e"; return; }
+    notes+=("check fails with the fix reversed")
+  else
+    notes+=("no fix reversal (no repro check or no non-test changes)")
+  fi
+  cmd="$(rget "$run/repo.json" mutation_cmd)"
+  if [ -n "$cmd" ] && [ "${#files[@]}" -gt 0 ]; then
+    for o in "${files[@]}"; do q+=("$(printf '%q' "$o")"); done
+    e=0; run_cmd "$run" "$run/src/candidate" "${cmd//\{files\}/${q[*]}}" "$run/logs/mutation.log" || e=$?
+    o="$(outcome "$e" "$run")"
+    case "$o" in
+      bad) record "$run" mutation fail "mutation tool: too many surviving mutants" "$e"; return ;;
+      budget) record "$run" mutation budget "timed out" "$e"; return ;;
+    esac
+    notes+=("mutation tool passed")
+  else
+    notes+=("no mutation tool run")
+  fi
+  if [[ "${notes[*]}" == *"no fix reversal"* && "${notes[*]}" == *"no mutation tool"* ]]; then
+    record "$run" mutation skip "${notes[*]}"
+  else
+    record "$run" mutation pass "$(IFS=';'; echo "${notes[*]}")"
+  fi
+}
+
+# The prober's checks live in <run>/probe/ at repo-relative paths. Each runs alone on a copy of
+# the candidate; all must pass. No checks is a failure of the QA rig, recorded as such.
+gate_probe() {
+  local run="$1" f e=0 o failed=() n=0
+  [ -z "$(find "$run/probe" -type l)" ] || { record "$run" probe fail "probe folder holds a symlink; checks must be plain files"; return; }
+  mapfile -t probes < <(cd "$run/probe" && find . -type f ! -name '*.md' | sed 's|^\./||' | sort)
+  [ "${#probes[@]}" -gt 0 ] || { record "$run" probe fail "the prober wrote no checks (a QA rig problem, not the candidate)"; return; }
+  for f in "${probes[@]}"; do safe_path "$f" || { record "$run" probe fail "probe path not allowed: $f"; return; }; done
+  # Each check alone on its own fresh checkout with setup run, so one check cannot change what
+  # the next one sees. Probe checks only add files: replacing a candidate file could hide a failure.
+  for f in "${probes[@]}"; do
+    n=$((n+1)); e=0
+    tree "$run" "probe-$n" "$(cat "$run/candidate.sha")" probe || return 0
+    { [ ! -e "$run/src/probe-$n/$f" ] && [ ! -L "$run/src/probe-$n/$f" ] && inside "$run/src/probe-$n" "$f"; } \
+      || { record "$run" probe fail "probe check $f would replace a file already in the candidate"; return; }
+    mkdir -p "$(dirname "$run/src/probe-$n/$f")"; cp "$run/probe/$f" "$run/src/probe-$n/$f"
+    check "$run" "$run/src/probe-$n" "$f" "$run/logs/probe.log" || e=$?
+    o="$(outcome "$e" "$run")"
+    [ "$o" != budget ] || { record "$run" probe budget "timed out at $f"; return; }
+    [ "$o" = ok ] || failed+=("$f")
+  done
+  if [ "${#failed[@]}" -eq 0 ]; then record "$run" probe pass "$n checks"
+  else record "$run" probe fail "${#failed[@]} of $n probe checks fail: ${failed[*]}"; fi
+}
+
+gate_suite() {
+  local run="$1" cmd k e o
+  for k in suite_cmd smoke_cmd; do
+    cmd="$(rget "$run/repo.json" "$k")"
+    [ -n "$cmd" ] || { [ "$k" = smoke_cmd ] && continue; record "$run" suite fail "repo has no suite_cmd"; return; }
+    e=0
+    run_cmd "$run" "$run/src/candidate" "$cmd" "$run/logs/suite.log" || e=$?
+    o="$(outcome "$e" "$run")"
+    case "$o" in
+      budget) record "$run" suite budget "timed out in ${k%_cmd}" "$e"; return ;;
+      bad) record "$run" suite fail "${k%_cmd} failed" "$e"; return ;;
+    esac
+  done
+  record "$run" suite pass "$( [ -n "$(rget "$run/repo.json" smoke_cmd)" ] && echo 'suite + smoke' || echo 'suite only: this repo has no smoke command')"
+}
+
+# The one judgment gate: the test auditor's file, header line "coverage: covered|narrowed".
+gate_audit() {
+  local run="$1" c
+  [ -f "$run/audit.md" ] || { record "$run" audit fail "no audit.md from the test auditor"; return; }
+  c="$(head -n 1 "$run/audit.md" | tr -d '\r' | sed -n 's/^coverage: \(covered\|narrowed\)[[:space:]]*$/\1/p')"
+  case "$c" in
+    covered) record "$run" audit pass "auditor judgment: tests cover the issue" ;;
+    narrowed) record "$run" audit narrowed "auditor judgment: tests cover less than the issue asked" ;;
+    *) record "$run" audit fail "audit.md's first line is not exactly 'coverage: covered' or 'coverage: narrowed'" ;;
+  esac
+}
+
+# Not a gate: lets the prober see its check run before the probe gate does. Nothing recorded.
+cmd_try() {
+  local id="${1:-}" f="${2:-}" run e=0
+  run="$(run_dir "$id")"
+  safe_path "$f" && [ -f "$run/probe/$f" ] || die "give a check's path under $run/probe/"
+  [ "$(remaining "$run")" -gt 0 ] || die "the run's wall-clock budget is spent"
+  [ ! -L "$run/probe/$f" ] || die "$f is a symlink; checks must be plain files"
+  local t="try-$(date +%s%N)"
+  tree "$run" "$t" "$(cat "$run/candidate.sha")" || die "setup failed in the try copy (logs/setup-$t.log)"
+  { [ ! -e "$run/src/$t/$f" ] && inside "$run/src/$t" "$f"; } || { git -C "$run/src/repo" worktree remove --force "$run/src/$t"; die "$f already exists in the candidate; probe checks must be new files"; }
+  mkdir -p "$(dirname "$run/src/$t/$f")"; cp "$run/probe/$f" "$run/src/$t/$f"
+  : >"$run/logs/try.log"
+  check "$run" "$run/src/$t" "$f" "$run/logs/try.log" || e=$?
+  git -C "$run/src/repo" worktree remove --force "$run/src/$t" 2>/dev/null || rm -rf "$run/src/$t"
+  cat "$run/logs/try.log"
+  say "exit $e"
+}
+
+# --- the verdict ----------------------------------------------------------------------------
+
+# The first gate that did not pass decides; a gate never run counts as a failure.
+verdict_of() {
+  local run="$1" g s
+  for g in "${GATES[@]}"; do
+    s="$(status_of "$run" "$g")"
+    case "$s" in
+      pass|skip) continue ;;
+      budget) echo "budget_exceeded $g"; return ;;
+      no_repro) echo "cannot_reproduce $g"; return ;;
+      narrowed) echo "narrowed $g"; return ;;
+      missing) [ "$(remaining "$run")" -le 0 ] && echo "budget_exceeded $g not-run" || echo "fail $g not-run"; return ;;
+      fail) [ "$g" = mutation ] && echo "narrowed $g" || echo "fail $g"; return ;;
+      *) echo "fail $g"; return ;;
+    esac
+  done
+  echo "pass -"
+}
+
+cmd_verdict() {
+  local id="${1:-}" run v gate extra mins g
+  run="$(run_dir "$id")"
+  [ ! -f "$run/verdict.json" ] || { say "verdict already written: $run/verdict.md"; return; }
+  read -r v gate extra <<<"$(verdict_of "$run")"
+  mins=$(( ( $(date +%s) - $(cat "$run/started") + 59 ) / 60 ))
+  jq -n --arg v "$v" --arg g "$gate" --arg x "${extra:-}" --arg id "$id" --argjson m "$mins" \
+        --slurpfile c "$run/contract.json" \
+        '{verdict:$v, gate:(if $g == "-" then null else $g end), gate_not_run:($x == "not-run"),
+          run:$id, issue:$c[0].issue, candidate:$c[0].candidate, wall_minutes:$m,
+          tokens:"not measured in v0.1"}' >"$run/verdict.json"
+  {
+    say "verdict: $v"
+    say "issue: $(jq -r .issue "$run/contract.json")"
+    say "candidate: $(cat "$run/candidate.sha")"
+    say "base: $(cat "$run/base.sha")"
+    say "run: $id"
+    say "wall_minutes: $mins of $(jq -r .budget.wall_minutes "$run/contract.json")"
+    [ "$gate" = - ] || say "stopped_at: $gate${extra:+ (never run)}"
+    say ""
+    say "## Done condition"
+    jq -r .done_condition "$run/contract.json"
+    say ""
+    say "## Gates (mechanical gates are facts; the audit is a judgment)"
+    say ""
+    say "| Gate | Status | Note |"
+    say "| --- | --- | --- |"
+    for g in "${GATES[@]}"; do
+      [ -f "$run/gates/$g.json" ] && jq -r '"| \(.gate) | \(.status) | \(.note) |"' "$run/gates/$g.json" || say "| $g | not run | |"
+    done
+    say ""
+    say "## Evidence"
+    say "- Logs: $run/logs/"
+    say "- Recordings and screenshots: $run/evidence/"
+    [ -z "$(ls -A "$run/probe" 2>/dev/null)" ] || say "- Prober's checks: $run/probe/"
+    [ ! -f "$run/audit.md" ] || say "- Test auditor's note (judgment): $run/audit.md"
+    [ "$gate" = - ] || [ ! -f "$run/logs/$gate.log" ] || { say ""; say "## Last lines of the $gate log"; say '```'; tail -n 30 "$run/logs/$gate.log"; say '```'; }
+  } >"$run/verdict.md"
+  cleanup "$run"
+  say "$v ($run/verdict.md)"
+}
+
+# Finalize every run whose budget is spent but has no verdict (a seat died or stalled), so its
+# clones and boot are cleaned up. The gatekeeper runs this before each new contract.
+cmd_sweep() {
+  local d id
+  for d in "$QA_HOME"/runs/*/; do
+    [ -f "$d/contract.json" ] && [ ! -f "$d/verdict.json" ] || continue
+    id="$(basename "$d")"
+    [ "$(remaining "$d")" -le 0 ] || continue
+    say "sweeping $id (budget spent, no verdict)"
+    cmd_verdict "$id"
+  done
+}
+
+# Stop whatever boot started, then delete the clones. Evidence, logs and gate files stay.
+cleanup() {
+  local run="$1" cmd
+  cmd="$(rget "$run/repo.json" teardown_cmd)"
+  if [ -n "$cmd" ] && [ -f "$run/booted" ] && [ -d "$run/src/candidate" ]; then
+    ( cd "$run/src/candidate" && QA_RUN="$run" QA_EVIDENCE="$run/evidence" timeout --kill-after=10 300 bash -c "$cmd" ) >>"$run/logs/teardown.log" 2>&1 || say "warning: teardown failed (see $run/logs/teardown.log)"
+  fi
+  rm -rf "$run/src"
+}
+
+# --- build side ---------------------------------------------------------------------------
+
+cmd_send() {
+  local c="${1:-}" dest f
+  [ -n "$c" ] || usage
+  check_contract "$c"
+  [ -f "$(repo_file "$(repo_slug "$(jq -r .repo "$c")")")" ] \
+    || die "the QA rig has no settings for this repo; the operator runs: scripts/qa repo $(repo_slug "$(jq -r .repo "$c")")"
+  # The verdict goes back to reply_to; a seat OpenRig does not know would strand it.
+  local to; to="$(jq -r .reply_to "$c")"
+  rig ps --nodes -A --json 2>/dev/null | jq -e --arg s "$to" '[.. | strings] | index($s) != null' >/dev/null \
+    || die "reply_to '$to' is not a seat OpenRig knows (rig ps --nodes -A); the verdict would have nowhere to go"
+  mkdir -p "$QA_HOME/inbox"
+  f="$QA_HOME/inbox/$(jq -r .issue "$c")-$(date +%Y%m%d-%H%M%S).json"
+  cp "$c" "$f"
+  dest="qa-gatekeeper@$QA_RIG"
+  rig queue create --destination "$dest" --gate qa --summary "QA $(jq -r .issue "$c"): try to break $(jq -r .candidate "$c")" \
+    --body "contract: $f" --source "$(jq -r .reply_to "$c")" >/dev/null \
+    || die "could not queue the contract for $dest (is the QA rig up? rig ps)"
+  say "queued for $dest: $f"
+}
+
+# --- the merge gate ------------------------------------------------------------------------
+
+HOOK_MARK="# foreman-qa merge gate"
+
+# Exit 0 if a finished QA run passed exactly commit $1.
+cmd_passed() {
+  local sha="${1:-}" d
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "give a full 40-character commit id"
+  for d in "$QA_HOME"/runs/*/; do
+    [ -f "$d/verdict.json" ] && [ "$(cat "$d/candidate.sha" 2>/dev/null)" = "$sha" ] || continue
+    [ "$(jq -r .verdict "$d/verdict.json")" = pass ] && { say "QA pass: $(basename "$d")"; return 0; }
+  done
+  return 1
+}
+
+# Run by the repo's pre-merge-commit hook, inside that repo. A merge of a foreman/ branch needs
+# a QA pass for the exact commit being merged; any other merge is left alone. Git names the
+# merged commits in GITHEAD_<sha>=<name> variables (MERGE_HEAD is not written yet at this point).
+# If it cannot tell what is being merged, it refuses: the gate fails closed.
+cmd_merge_gate() {
+  local v sha name heads=() sha_br
+  while IFS= read -r v; do heads+=("$v"); done < <(env | sed -n 's/^GITHEAD_\([0-9a-f]\{40\}\)=\(.*\)$/\1 \2/p')
+  [ "${#heads[@]}" -gt 0 ] || die "merge refused: cannot tell which commit is being merged (no GITHEAD_ variables from git)"
+  for v in "${heads[@]}"; do
+    sha="${v%% *}"; name="${v#* }"
+    sha_br="$(git for-each-ref --points-at "$sha" --format='%(refname:short)' 'refs/heads/foreman/*' | head -1)"
+    case "$name" in foreman/*) ;; *) [ -n "$sha_br" ] || continue; name="$sha_br" ;; esac
+    cmd_passed "$sha" >/dev/null || die "merge refused: $name ($sha) has no QA pass for this exact commit.
+Send it to the QA rig first (scripts/qa send <contract>). A commit changed after QA needs QA again."
+  done
+  exit 0
+}
+
+# scripts/qa hook <repo> on|off|status: install or remove the merge gate in that repo.
+cmd_hook() {
+  local repo="${1:-}" what="${2:-status}" dir f
+  [ -n "$repo" ] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || die "give a git repository: scripts/qa hook <repo> on|off|status"
+  dir="$(git -C "$repo" rev-parse --path-format=absolute --git-path hooks)"
+  f="$dir/pre-merge-commit"
+  case "$what" in
+    on)
+      [ ! -e "$f" ] || grep -q "$HOOK_MARK" "$f" || die "$f exists and is not ours; merge it by hand"
+      mkdir -p "$dir"
+      # Fails closed: if this script is gone, the hook refuses the merge.
+      printf '#!/bin/sh\n%s\nQA_HOME=%q QA_RIG=%q exec %q merge-gate\n' "$HOOK_MARK" "$QA_HOME" "$QA_RIG" "$ROOT/scripts/qa" >"$f"
+      chmod +x "$f"; say "merge gate ON in $repo (foreman/ branches need a QA pass to merge)" ;;
+    off)
+      if [ -e "$f" ]; then grep -q "$HOOK_MARK" "$f" || die "$f is not ours; left alone"; rm -f "$f"; fi
+      say "merge gate OFF in $repo" ;;
+    status)
+      if [ -e "$f" ] && grep -q "$HOOK_MARK" "$f"; then say "on"; else say "off"; fi ;;
+    *) die "hook takes on, off or status" ;;
+  esac
+}
+
+# --- operator setup -----------------------------------------------------------------------
+
+cmd_init() {
+  mkdir -p "$QA_HOME"/{runs,inbox} "$QA_REPOS"
+  if [ -f "$RIG_FILE" ]; then say "kept existing $RIG_FILE"
+  else
+    { printf '# QA home (the seats work here): %s\n' "$QA_HOME"; sed "s/^name: SET-ME$/name: $QA_RIG/" "$ROOT/qa/rig.template.yaml"; } >"$RIG_FILE"
+    say "wrote $RIG_FILE: replace every SET-ME (runtime and model per seat; see qa/README.md)"
+  fi
+  # The seats work in the QA home and call ./qa there.
+  printf '#!/bin/sh\nQA_HOME=%q QA_RIG=%q exec %q "$@"\n' "$QA_HOME" "$QA_RIG" "$ROOT/scripts/qa" >"$QA_HOME/qa"
+  chmod +x "$QA_HOME/qa"
+  say "QA home: $QA_HOME"
+}
+
+cmd_repo() {
+  local name="${1:-}" f
+  [[ "$name" =~ ^[a-z0-9-]+$ ]] || die "give the repo's folder name in lower case, e.g. scripts/qa repo magnus-nova-service"
+  f="$(repo_file "$name")"
+  mkdir -p "$(dirname "$f")"
+  [ ! -f "$f" ] || { say "kept existing $f"; return; }
+  cp "$ROOT/qa/repo.template.json" "$f"
+  say "wrote $f: set each command for this repo (see qa/README.md), \"\" for none"
+}
+
+cmd_check() {
+  [ -f "$RIG_FILE" ] || die "no $RIG_FILE yet; run: scripts/qa init"
+  ! grep -qE '^[^#]*SET-ME' "$RIG_FILE" || die "$RIG_FILE still has SET-ME values:
+$(grep -nE '^[^#]*SET-ME' "$RIG_FILE")"
+  rig spec validate "$RIG_FILE" || die "rig spec validate failed (see above)"
+}
+
+# Pi seats under OpenRig keep their own agent folder; link the user's Pi model list into it so
+# local providers (e.g. vllm) resolve. A seat's own models.json is never replaced.
+seed_pi_models() {
+  local src="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/models.json" id dir
+  [ -f "$src" ] || return 0
+  for id in $(awk '/^[[:space:]]*- id:/ {id=$3} /^[[:space:]]*runtime:[[:space:]]*pi/ {print id}' "$RIG_FILE"); do
+    dir="${OPENRIG_HOME:-$HOME/.openrig}/state/pi/qa-$id@$QA_RIG/agent"
+    mkdir -p "$dir"
+    [ -e "$dir/models.json" ] && [ ! -L "$dir/models.json" ] || ln -sfn "$src" "$dir/models.json"
+  done
+}
+
+cmd_up() {
+  cmd_check
+  seed_pi_models
+  rig up "$RIG_FILE" --cwd "$QA_HOME"
+  say "QA rig starting. Gatekeeper: qa-gatekeeper@$QA_RIG. Watch: rig tui"
+}
+
+cmd_down() { rig down "$QA_RIG"; }
+
+case "${1:-}" in
+  init) shift; cmd_init "$@" ;;
+  repo) shift; cmd_repo "$@" ;;
+  check) shift; cmd_check "$@" ;;
+  up) shift; cmd_up "$@" ;;
+  down) shift; cmd_down "$@" ;;
+  send) shift; cmd_send "$@" ;;
+  new) shift; cmd_new "$@" ;;
+  gate) shift; cmd_gate "$@" ;;
+  verdict) shift; cmd_verdict "$@" ;;
+  try) shift; cmd_try "$@" ;;
+  sweep) shift; cmd_sweep "$@" ;;
+  passed) shift; cmd_passed "$@" ;;
+  merge-gate) shift; cmd_merge_gate "$@" ;;
+  hook) shift; cmd_hook "$@" ;;
+  validate) shift; check_contract "${1:-}"; say "contract ok" ;;
+  *) usage ;;
+esac

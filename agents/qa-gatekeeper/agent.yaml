@@ -1,0 +1,27 @@
+name: qa-gatekeeper
+version: "3.0"
+description: "QA gatekeeper - receives the contract, runs the gates in code, dispatches the prober and test auditor, returns the verdict"
+
+imports:
+  - ref: local:../shared
+
+profiles:
+  default:
+    uses:
+      skills: []
+      guidance: []
+      subagents: []
+      plugins: [shared:openrig-core]
+      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
+
+resources:
+  guidance:
+    - id: role
+      path: guidance/role.md
+
+startup:
+  files:
+    - path: guidance/role.md
+      delivery_hint: send_text
+      required: true
+  actions: []

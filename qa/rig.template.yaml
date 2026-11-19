@@ -1,0 +1,51 @@
+# QA rig: an OpenRig setup that receives a candidate change and tries to break it.
+#
+# Don't edit this file. `scripts/qa init` copies it to rig.qa.yaml (gitignored) at the repo
+# root. In that copy, replace every SET-ME:
+#   runtime: claude-code | codex | pi
+#   model:   a model that runtime can run (see qa/README.md for the suggested split)
+# Rule of thumb: the prober and the test auditor must be different model families from the
+# build rig's builder, and from each other where you can.
+
+version: "0.2"
+name: SET-ME
+summary: >
+  QA rig: the gatekeeper runs the gates in code, the prober writes checks from the done
+  condition without reading the diff, the test auditor judges whether the tests cover the issue.
+  It never writes product code and never retries on its own.
+
+culture_file: qa/CULTURE.md
+
+managed_blocks:
+  claude-code: CLAUDE.local.md
+
+docs:
+  - path: qa/README.md
+
+pods:
+  - id: qa
+    label: QA rig
+    members:
+      - id: gatekeeper
+        agent_ref: "local:agents/qa-gatekeeper"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      - id: prober
+        agent_ref: "local:agents/qa-prober"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      - id: auditor
+        agent_ref: "local:agents/qa-test-auditor"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+    edges:
+      - {kind: delegates_to, from: gatekeeper, to: prober}
+      - {kind: delegates_to, from: gatekeeper, to: auditor}
+
+edges: []

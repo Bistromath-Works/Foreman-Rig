@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **QA rig (CF-9).** A separate rig, `foreman-qa`, that receives a candidate from any build rig
+  and tries to break it. It has three seats (gatekeeper, prober, test auditor), and its seven gates
+  are in code in `scripts/qa`. The verdict is computed from the gate result files in order: a gate
+  runs only after the earlier ones passed, runs once, and a gate never run counts as a failure.
+  The wall-clock budget caps every command. Build rigs send a JSON contract with
+  `scripts/qa send` and get `pass`, `fail`, `cannot_reproduce`, `narrowed` or `budget_exceeded`
+  back with evidence. The QA rig clones read-only and never writes product code.
+  `tests/qa.sh` covers every verdict on a fixture repo.
+- **Foreman crews can use the QA rig.** A new optional `qa_cmd` in `project.yaml` makes the owner
+  send each candidate to the QA rig before the checker, and act on the verdict (owner role,
+  step 4b). `scripts/qa hook <repo> on` installs a git merge gate: a `foreman/` branch merges
+  only when a QA run passed its exact commit. The gate fails closed.
+
 - **The owner closes the class, not only the case (CF-1).** A BLOCK used to end with a fix and a
   regression test for that one bug, so the same kind of mistake could be made elsewhere and the
   checker had to catch it again. In fix rounds the owner now asks, for each HIGH and MED, whether
