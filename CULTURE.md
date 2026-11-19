@@ -3,7 +3,8 @@
 This rig runs one coding job at a time. The owner (`crew-owner`) owns the repository, builds,
 and is the only seat that talks to the human. The checker (`crew-checker`) is the independent
 gate; the auditor (`crew-auditor`, optional) audits the whole repo on a schedule and helps when
-a job is stuck. Your session name and rig are in `rig whoami --json`.
+a job is stuck; the coder (`crew-coder`, optional) writes small pieces of code the owner hands
+it. Your session name and rig are in `rig whoami --json`.
 
 ## The human
 The human is asked about three things only: **big decisions, serious failures, and
@@ -21,7 +22,7 @@ before your first command. "The verify command" or "the base branch" means the v
 Never guess a command the file does not name.
 
 ## How work moves
-- **The checker and auditor act only on a queue item from the owner.** On boot, and whenever
+- **The checker, auditor and coder act only on a queue item from the owner.** On boot, and whenever
   your queue is empty, do nothing: say you are ready in one line and wait, even if a spec or
   task is sitting in the repo.
 - `rig queue claim <id>` the item, then do it. Inputs are the files the task names, under
@@ -46,7 +47,8 @@ repo and removes it when done.
   global installs, nothing on `banned_cmds`. The one exception: the owner pushes after the
   human says so for that job.
 - Only the owner commits, only on a `foreman/<job-id>` branch, and only the owner merges into
-  the base branch, after a checker PASS.
+  the base branch, after a checker PASS. The coder edits the files its task lists and leaves
+  them uncommitted for the owner.
 - Nobody starts servers or background processes: no dev servers, no `nohup`, no `setsid`, no
   trailing `&`. The only live server allowed is one the verify command starts and stops itself.
 - Never edit files under `acceptance_tests` or `protected_paths`. A test you think is wrong is

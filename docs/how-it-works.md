@@ -2,7 +2,7 @@
 
 ## The shape
 
-Foreman is one OpenRig pod called `crew` with two seats, three with the optional auditor. Each
+Foreman is one OpenRig pod called `crew` with two seats, plus an optional auditor and an optional coder. Each
 seat is a coding agent in its own terminal session, named `crew-<seat>@foreman-<project>`. The
 owner is the hub: it is the only seat that talks to you, and every piece of work goes from the
 owner to one seat and back.
@@ -11,7 +11,7 @@ Work moves through OpenRig's queue, not chat:
 
 1. The owner writes a task file under `.foreman/jobs/<job-id>/ctx/` and creates a queue item
    pointing at it.
-2. The checker (or auditor) claims the item, reads the files the task names, and writes its
+2. The checker (or auditor, or coder) claims the item, reads the files the task names, and writes its
    result to `.foreman/jobs/<job-id>/out/`, starting with a header like `verdict: PASS`.
 3. It hands the item back to the owner, which reads the result and decides the next step.
 
@@ -93,6 +93,23 @@ Optional (`scripts/foreman init <project> --auditor`). Two duties:
   It returns two or three structurally different approaches and a pick. Advice, never a verdict.
 
 It works best as a different model family from the owner and the checker.
+
+## The coder
+
+Optional (`scripts/foreman init <project> --coder`). A smaller, cheaper model, usually a local
+one, that writes the tactical code: a small piece the owner has fully spelled out, with a
+command that proves it works.
+
+- The owner writes a task file: the goal, the files the coder may change, the rules as a
+  numbered list, and the one command that must pass.
+- The coder changes those files, runs the command, checks each rule, and writes a short result
+  (`status: done` or `status: stuck`). It never commits and never touches git state.
+- The owner reads the whole diff, runs the command itself, checks every rule, and commits. From
+  that commit on it is the owner's code. After two failed rounds the owner writes the piece
+  itself.
+
+Nothing about the gate changes: the checker still checks the owner's candidate, whoever typed
+it. Design, schemas, money, security and anything the task cannot spell out stay with the owner.
 
 ## What gets written where
 

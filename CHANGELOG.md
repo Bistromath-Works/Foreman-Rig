@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Optional coder seat (CF-12).** `scripts/foreman init <project> --coder` adds a fourth seat
+  for a smaller, cheaper model, usually a local one. The owner hands it small, fully specified
+  pieces (files it may change, numbered rules, one command that must pass); the coder writes
+  them and never commits; the owner reads the whole diff, checks every rule and commits. The
+  checker's gate is unchanged. `docs/models.md` has the measurements we picked our coder with
+  and the server flags for a local Qwen3.8-27B.
+
 - **QA rig (CF-9).** A separate rig, `foreman-qa`, that receives a candidate from any build rig
   and tries to break it. It has three seats (gatekeeper, prober, test auditor), and its seven gates
   are in code in `scripts/qa`. The verdict is computed from the gate result files in order: a gate

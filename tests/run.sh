@@ -118,6 +118,32 @@ grep -q 'id: auditor' "$RIG" && grep -q 'to: auditor' "$RIG" && ok "init --audit
 teardown
 
 setup
+"$F" init "$P" >/dev/null
+! grep -q 'coder' <(grep -v '^#' "$RIG") && ok "init leaves the coder out by default, seat and edge" || bad "default no coder" "$(grep -n coder "$RIG")"
+teardown
+
+setup
+out="$("$F" init "$P" --coder 2>&1)"
+grep -q 'id: coder' "$RIG" && grep -q 'to: coder' "$RIG" && ! grep -q 'id: auditor' "$RIG" && ! grep -q 'to: auditor' "$RIG" \
+  && ok "init --coder keeps the coder seat and its edge, and not the auditor" || bad "--coder" "$(grep -n 'coder\|auditor' "$RIG")"
+echo "$out" | grep -q 'with the coder' && ok "init --coder says the coder is in" || bad "--coder message" "$out"
+fill coder=pi:vllm/qwen3.8-27b
+out="$("$F" check "$P" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && ok "a crew with a local pi coder passes check" || bad "coder check" "$out"
+out="$("$F" init "$P" --coder 2>&1)"
+echo "$out" | grep -q 'coder ignored' && ok "init --coder on an existing file says it was ignored" || bad "coder existing" "$out"
+teardown
+
+setup
+"$F" init "$P" --coder --auditor >/dev/null
+grep -q 'id: coder' "$RIG" && grep -q 'to: coder' "$RIG" && grep -q 'id: auditor' "$RIG" && grep -q 'to: auditor' "$RIG" \
+  && ok "init --auditor --coder keeps both optional seats" || bad "both optional seats" "$(grep -n 'coder\|auditor' "$RIG")"
+[ "$(grep -c 'agent_ref' "$RIG")" = 4 ] && ok "the full crew is four seats" || bad "four seats" "$(grep -n agent_ref "$RIG")"
+[ -f "$SRC/agents/coder/agent.yaml" ] && [ -f "$SRC/agents/coder/guidance/role.md" ] \
+  && ok "the coder seat the template points at exists" || bad "agents/coder missing"
+teardown
+
+setup
 "$F" init "$P" >/dev/null; fill checker=nonsense:x
 out="$("$F" check "$P" 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -q "seat checker: runtime 'nonsense'" && ok "check rejects an unknown runtime" || bad "unknown runtime" "$out"

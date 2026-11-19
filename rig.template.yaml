@@ -4,7 +4,8 @@
 # (gitignored) and sets the name. In that copy, replace every SET-ME:
 #   runtime: claude-code | codex | pi
 #   model:   a model that runtime can run (see docs/models.md)
-# The auditor is optional: `init --auditor` keeps its block, plain `init` removes it.
+# The auditor and the coder are optional: `init --auditor` and `init --coder` keep their
+# blocks, plain `init` removes them.
 # `scripts/foreman check <project>` refuses to launch while any SET-ME is left.
 
 version: "0.2"
@@ -49,8 +50,17 @@ pods:
         profile: default
         cwd: "."
       # --- end auditor ---
+      # --- coder (optional): kept by `init --coder` ---
+      - id: coder
+        agent_ref: "local:agents/coder"
+        runtime: SET-ME
+        model: SET-ME
+        profile: default
+        cwd: "."
+      # --- end coder ---
     edges:
       - {kind: delegates_to, from: owner, to: checker}
       - {kind: delegates_to, from: owner, to: auditor}  # auditor edge: removed with the auditor block
+      - {kind: delegates_to, from: owner, to: coder}  # coder edge: removed with the coder block
 
 edges: []
