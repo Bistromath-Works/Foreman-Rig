@@ -26,8 +26,9 @@ CLU_URL="${CLU_URL:-https://openrouter.ai/api/v1/chat/completions}"
 CLU_MODEL="${CLU_MODEL:-z-ai/glm-5.3}"
 MIN_JOBS=3
 # Shapes of things that must never be sent out: common key prefixes, long hex or base64 runs,
-# private key blocks, and "password=" style pairs.
-SECRET_RE='(sk-[A-Za-z0-9_-]{16,}|sk_live_[A-Za-z0-9]{8,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|[A-Fa-f0-9]{40,}|(password|passwd|secret|api[_-]?key|token)[[:space:]]*[:=][[:space:]]*[^[:space:]]{8,})'
+# private key blocks, and "password=" style pairs whose value is one unbroken run of 16 or more
+# key-like characters (so "the token: subsequent requests..." in a lesson is not a hit).
+SECRET_RE='(sk-[A-Za-z0-9_-]{16,}|[sr]k_(live|test)_[A-Za-z0-9]{8,}|pk_(live|test)_[A-Za-z0-9]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|[A-Fa-f0-9]{40,}|[A-Za-z0-9+/]{48,}={0,2}|(password|passwd|secret|api[_-]?key|token)[[:space:]]*[:=][[:space:]]*["\x27]?[A-Za-z0-9_+/.=-]{16,})'
 
 die() { printf 'clu: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -76,25 +77,35 @@ cmd_audit() {
         --data-binary "@$tmp/body.json" "$CLU_URL" 2>"$tmp/curl.err")" || die "request failed: $(head -c 200 "$tmp/curl.err" | tr '\n' ' ')"
   [ "$http" = 200 ] || die "the model service answered HTTP $http: $(head -c 200 "$tmp/resp.json" | tr '\n' ' ')"
   jq -r '.choices[0].message.content // ""' "$tmp/resp.json" | sed -e '1s/^```json[[:space:]]*$//' -e '1s/^```[[:space:]]*$//' -e '$s/^```[[:space:]]*$//' >"$tmp/answer.json"
-  jq -e 'type == "object" and has("proposal")' "$tmp/answer.json" >/dev/null 2>&1 || die "the model's answer was not the JSON object asked for; nothing was written"
+  # Exactly one JSON object, and that same object is what gets checked, stored and patched.
+  jq -es 'length == 1 and (.[0] | type == "object" and has("proposal"))' "$tmp/answer.json" >/dev/null 2>&1 \
+    || die "the model's answer was not the one JSON object asked for; nothing was written"
+  jq -s '.[0]' "$tmp/answer.json" >"$tmp/answer1.json" && mv "$tmp/answer1.json" "$tmp/answer.json"
 
   # Every claim in the answer is checked here. A proposal that fails a check is kept, marked
   # rejected with the reason, so the bake-off can count how often each model gets it wrong.
   local problems=() file old new n
   if jq -e '.proposal == null' "$tmp/answer.json" >/dev/null; then :; else
-    jq -e '.proposal | (.file|type)=="string" and (.old_text|type)=="string" and (.new_text|type)=="string" and (.habit|type)=="string" and (.jobs|type)=="array"' "$tmp/answer.json" >/dev/null \
-      || problems+=("the proposal is missing a field")
+    jq -e '.proposal | type == "object" and (.file|type)=="string" and (.old_text|type)=="string" and (.new_text|type)=="string" and (.habit|type)=="string"
+           and (.jobs|type)=="array" and (.jobs | all(.[]; type == "string"))' "$tmp/answer.json" >/dev/null \
+      || problems+=("the proposal is missing a field, or its jobs are not a list of job ids")
     if [ "${#problems[@]}" -eq 0 ]; then
       file="$(jq -r .proposal.file "$tmp/answer.json")"
       files | grep -qxF "$file" || problems+=("'$file' is not a rulebook file")
-      n="$(jq -r --slurpfile l <(jq -cs '[.[].job] | unique' "$ledger") '[.proposal.jobs[] | tostring] | unique | map(select(. as $j | $l[0] | index($j))) | length' "$tmp/answer.json")"
+      n="$(jq -r --slurpfile l <(jq -cs '[.[].job] | unique' "$ledger") '[.proposal.jobs | unique[] | select(. as $j | $l[0] | index($j) | not)] | join(", ")' "$tmp/answer.json")"
+      [ -z "$n" ] || problems+=("it names a job that is not in the ledger: $n")
+      n="$(jq -r '.proposal.jobs | unique | length' "$tmp/answer.json")"
       [ "$n" -ge "$MIN_JOBS" ] || problems+=("the habit is tied to $n job(s) in the ledger; it needs $MIN_JOBS")
       if [ -f "$ROOT/$file" ] && files | grep -qxF "$file"; then
         n="$(jq -r --rawfile f "$ROOT/$file" '.proposal.old_text as $o | if ($o | length) == 0 then 0 else ($f | split($o) | length - 1) end' "$tmp/answer.json")"
         [ "$n" -eq 1 ] || problems+=("old_text occurs $n time(s) in $file; it must occur exactly once")
       fi
-      jq -e '.proposal | (.new_text | rtrimstr("\n") | split("\n") | length) <= (.old_text | rtrimstr("\n") | split("\n") | length)' "$tmp/answer.json" >/dev/null \
-        || problems+=("new_text has more lines than old_text; the rulebook may not grow")
+      jq -e '.proposal | .new_text != .old_text' "$tmp/answer.json" >/dev/null || problems+=("new_text is the same as old_text; the proposal changes nothing")
+      # Counted on the file as it would be after the change, so a stray newline cannot add a line.
+      if [ "${#problems[@]}" -eq 0 ]; then
+        jq -rj --rawfile f "$ROOT/$file" '.proposal as $p | ($f | split($p.old_text)) as $parts | $parts[0] + $p.new_text + $parts[1]' "$tmp/answer.json" >"$tmp/after"
+        [ "$(wc -l <"$tmp/after")" -le "$(wc -l <"$ROOT/$file")" ] || problems+=("the file would have more lines after the change; the rulebook may not grow")
+      fi
       ! jq -r '.proposal.new_text' "$tmp/answer.json" | grep -Eiq -- "$SECRET_RE" || problems+=("new_text holds something that looks like a key")
     fi
   fi
@@ -102,7 +113,9 @@ cmd_audit() {
   mkdir -p "$OUT"
   local stamp slug rec patch
   stamp="$(date -u +%Y%m%d-%H%M%S)"; slug="$(printf '%s' "$CLU_MODEL" | tr -c 'A-Za-z0-9.-' '_')"
-  rec="$OUT/$stamp-$slug.json"; patch="${rec%.json}.patch"
+  rec="$OUT/$stamp-$slug.json"; n=1
+  while [ -e "$rec" ] || [ -e "${rec%.json}.patch" ]; do n=$((n+1)); rec="$OUT/$stamp-$slug-$n.json"; done   # never reuse a name
+  patch="${rec%.json}.patch"
   jq -n --slurpfile a "$tmp/answer.json" --arg m "$CLU_MODEL" --arg at "$(date -u +%FT%TZ)" --arg p "$project" \
         --argjson lessons "$(wc -l <"$ledger" | tr -d ' ')" --argjson jobs "$jobs" --args \
     '{at:$at, model:$m, project:($p | split("/") | last), lessons:$lessons, jobs:$jobs,
@@ -112,7 +125,9 @@ cmd_audit() {
     file="$(jq -r .proposal.file "$rec")"; mkdir -p "$tmp/a/$(dirname "$file")" "$tmp/b/$(dirname "$file")"
     cp "$ROOT/$file" "$tmp/a/$file"
     jq -rj --rawfile f "$ROOT/$file" '.proposal as $p | ($f | split($p.old_text)) as $parts | $parts[0] + $p.new_text + $parts[1]' "$rec" >"$tmp/b/$file"
-    ( cd "$tmp" && diff -u "a/$file" "b/$file" >"$patch" ) || true
+    local drc=0
+    ( cd "$tmp" && diff -u "a/$file" "b/$file" >"$patch" ) || drc=$?
+    [ "$drc" -eq 1 ] || { rm -f "$patch"; die "could not make a patch for the proposal (diff exit $drc); the record is $rec"; }
   fi
   cmd_show "$rec"
 }
@@ -122,12 +137,12 @@ cmd_show() {
   jq -r '"CLU audit by \(.model) on \(.at[0:10]): \(.lessons) lessons from \(.jobs) jobs (\(.project))",
          "",
          "habits it saw:",
-         (.habits[]? | "  - [\(.about // "?")] \(.habit)  (jobs: \((.jobs // []) | join(", ")))"),
-         (if (.checks | length) > 0 then "better as a check in code:", (.checks[] | "  - \(.habit) -> \(.check)") else empty end),
+         (.habits[]? | objects | "  - [\(.about // "?" | tostring)] \(.habit | tostring)  (jobs: \(try ((.jobs // []) | map(tostring) | join(", ")) catch "?"))"),
+         (if (.checks | length) > 0 then "better as a check in code:", (.checks[] | objects | "  - \(.habit | tostring) -> \(.check | tostring)") else empty end),
          "",
          "result: \(.status | ascii_upcase)",
          (.problems[]? | "  rejected because: \(.)"),
-         (if .proposal then "  file:   \(.proposal.file)", "  habit:  \(.proposal.habit)", "  seen in: \((.proposal.jobs // []) | join(", "))", "  reason: \(.proposal.reason // "")" else empty end)' "$rec"
+         (if (.proposal | type) == "object" then "  file:   \(.proposal.file | tostring)", "  habit:  \(.proposal.habit | tostring)", "  seen in: \(try ((.proposal.jobs // []) | map(tostring) | join(", ")) catch "?")", "  reason: \(.proposal.reason // "" | tostring)" else empty end)' "$rec"
   [ ! -f "${rec%.json}.patch" ] || { say ""; cat "${rec%.json}.patch"; say ""; say "This is a proposal. Nothing was changed. To take it: apply the patch on a branch and open a pull request for the human."; }
   say "record: $rec"
 }

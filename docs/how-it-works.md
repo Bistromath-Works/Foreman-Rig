@@ -164,13 +164,16 @@ starts, and the seat is told why.
 | pi | An extension in the seat's own agent folder | Nothing |
 | codex | A PreToolUse hook in the project's `.codex/hooks.json` | Once per codex seat: open it, type `/hooks`, trust the Foreman guard. Until then codex ignores the hook |
 
-Built in: `git push`, `git remote add/set-url/remove/rename`, `gh`, and background processes
+Built in: `git push`, `git remote add/set-url/remove/rm/rename`, `gh`, and background processes
 (`&`, `nohup`, a tool call started in the background). A `banned_cmds` entry is plain text, or
-`"text (without word word)"`, which is banned unless the command has every one of those words:
-`"pnpm install (without --frozen-lockfile --offline)"`.
+`"text (without word word)"`, which is banned unless that same command has every one of those
+words as a whole argument: `"pnpm install (without --frozen-lockfile --offline)"` lets
+`pnpm install --frozen-lockfile --offline` through and stops `--offline=false`.
 
 A ban matches whole words anywhere in the command, so `vercel` stops `npx vercel deploy` and
-`bash -c 'vercel'` but not `cat vercel.json`. It also stops `git commit -m "remove vercel"`:
+`bash -c 'vercel'` but not `cat vercel.json`. Git's own options before the subcommand are
+looked through, so `git -C app push` is still a push. An `&` inside quotes is text, not a
+background process. It also stops `git commit -m "remove vercel"`:
 put such a message in a file. The guard stops a seat that forgets or misreads a rule. It does
 not stop one that hides the command in a script. If the ban list cannot be read, the guard
 refuses every shell command, so a broken setup is loud.

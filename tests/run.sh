@@ -38,6 +38,7 @@ echo "\$*" >> "$T/rig.calls"
 if [ "\$1 \$2" = "config get" ]; then cat "$T/allowlist" 2>/dev/null; fi
 if [ "\$1 \$2" = "daemon status" ]; then cat "$T/daemon.status" 2>/dev/null; fi
 if [ "\$1 \$2" = "spec validate" ] && [ -f "$T/validate.fail" ]; then echo "bad spec"; exit 1; fi
+if [ "\$1" = "up" ] && [ -f "$T/up.fail" ]; then cat "$T/up.fail"; exit 1; fi
 exit 0
 EOF
   chmod +x "$T/bin/rig"
@@ -553,6 +554,20 @@ cp "$HERE/smoke-reference.js" "$S/src/slugify.js"
   || bad "smoke example reference" "$(cd "$S" && "$NODE" --test 2>&1 | tail -20)"
 rm -rf "$S"
 
+# --- a seat that needs a person at start ---
+setup
+"$F" init "$P" >/dev/null; fill checker=codex:gpt-6-astra
+printf 'Error: 1 node requires attention before becoming interactive.\n  crew.checker (crew-checker@foreman-my-app): Startup requires attention: Codex is waiting for hook trust approval before the session can become interactive.\n' > "$T/up.fail"
+PATH="$PATH:$(dirname "$(command -v jq)")" out="$("$F" up "$P" 2>&1)"; rc=$?
+[ $rc -ne 0 ] && ok "up still reports the failure when a seat needs a person" || bad "up exit code" "$out"
+grep -q 'new-session.*foreman-unstick@foreman-my-app' "$T/tmux.calls" 2>/dev/null && ok "up starts the unstick watcher even when a seat needs a person" || bad "unstick watcher after a failed up" "$(cat "$T/tmux.calls" 2>&1)"
+echo "$out" | grep -q "tmux attach -t 'crew-checker@foreman-my-app'" && echo "$out" | grep -q "rig seat continue 'crew-checker@foreman-my-app'" && echo "$out" | grep -q 'Trust all and continue' \
+  && ok "up names the seat waiting on hook trust and gives the three steps" || bad "hook trust steps" "$out"
+rm -f "$T/up.fail" "$T/tmux.calls"
+PATH="$PATH:$(dirname "$(command -v jq)")" out="$("$F" up "$P" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && ! echo "$out" | grep -q 'waiting for you to trust' && grep -q 'new-session' "$T/tmux.calls" && ok "a clean start prints no trust steps and exits 0" || bad "clean up" "$out"
+teardown
+
 # --- banned commands refused by the runtime ---
 setup
 "$F" init "$P" --coder >/dev/null; fill checker=codex:gpt-6-astra coder=pi:vllm/qwen3.8-27b
@@ -599,13 +614,38 @@ while IFS='|' read -r want cmd; do gcheck "$want" "$cmd" || { allok=0; bad "guar
 0|pnpm lint && pnpm typecheck
 0|curl -s "http://localhost:3000/api?a=1&b=2"
 0|echo done >&2
+2|git -C app push origin main
+2|git -c user.name=x --no-pager push
+2|git push>push.log
+2|git remote rm origin
+2|pnpm install --frozen-lockfile --offline=false
+2|pnpm install --frozen-lockfile --offline-cache
+2|pnpm install --frozen-lockfile && echo --offline
+2|sleep 1&echo ready
+2|nohup>server.log pnpm dev
+2|bash -c 'pnpm dev &'
+0|cd web && pnpm install --offline --frozen-lockfile --reporter=silent
+0|rg 'foo & bar' src
+0|printf '%s\n' 'A & B'
+0|git -C app status
+0|echo "a && b"
+0|ls | grep x || true
 CASES
-[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (22 cases)"
+[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (38 cases)"
 printf '{"tool_name":"Bash","tool_input":{"command":"ls","run_in_background":true}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$B" 2>/dev/null; [ $? -eq 2 ] && ok "a command started in the background is refused" || bad "background flag"
 printf '{"tool_name":"Read","tool_input":{"file_path":"vercel.json"}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$B" 2>/dev/null; [ $? -eq 0 ] && ok "tools that are not a shell are not the guard's business" || bad "non-shell tool"
 printf '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$T/nowhere.json" 2>/dev/null; [ $? -eq 2 ] && ok "with no readable ban list the guard refuses, it does not wave commands through" || bad "guard fails closed"
 PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" >/dev/null 2>&1
 [ "$(jq '.hooks.PreToolUse | length' "$C")" = 2 ] && ok "running bans twice does not add the hook twice" || bad "bans idempotent" "$(cat "$C")"
+# a hook of the operator's own in the same group as ours survives an update
+jq '(.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks) |= [{"type":"command","command":"my-custom-bash-hook"}] + .' "$C" > "$C.tmp" && mv "$C.tmp" "$C"
+PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" >/dev/null 2>&1
+[ "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("my-custom-bash-hook|foreman-guard")) | if test("foreman-guard") then "guard" else "custom" end] | sort | join(",")' "$C")" = "custom,guard" ] \
+  && ok "updating the guard keeps another hook that sits in the same group" || bad "sibling hook kept" "$(cat "$C")"
+jq 'del(.hooks.PreToolUse[] | select(.hooks | any(.command == "my-custom-bash-hook")))' "$C" > "$C.tmp" && mv "$C.tmp" "$C"
+PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" >/dev/null 2>&1
+# a crew that moved off claude-code still gets its old claude hook removed by --off
+cp "$RIG" "$T/rig.keep"; sed -i 's/runtime: claude-code/runtime: codex/' "$RIG"
 PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" --off >/dev/null 2>&1
 [ "$(jq -r '[.hooks.PreToolUse[] | .matcher] | join(",")' "$C")" = "Edit" ] && [ ! -e "$P/.codex/hooks.json" ] && [ ! -e "$X" ] && [ ! -e "$B" ] \
   && ok "bans --off removes the guard everywhere and leaves other hooks alone" || bad "bans off" "$(cat "$C"; ls "$P/.codex" "$X" "$B" 2>&1)"
@@ -620,10 +660,11 @@ printf 'verdict: BLOCK\nround: 1\n' > "$J/out/check-r1.md"; printf 'verdict: PAS
 printf 'status: stuck\n' > "$J/out/code-1.md"; printf 'status: done\n' > "$J/out/code-2.md"; echo "r1 blocked" > "$J/LOG.md"
 echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$J/ctx/qa-r1.json"
 echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$T/qa/runs/r1/contract.json"; echo '{"verdict":"fail","gate":"green"}' > "$T/qa/runs/r1/verdict.json"
-echo '{"issue":"fmn-20261120-0900","decision":"send_back"}' > "$T/qa/screener/log.jsonl"
+echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$J/ctx/qa-r2.json"   # a second round, same issue
+printf '%s\n' '{"issue":"fmn-20261120-0900","repo":"my-app","decision":"send_back"}' '{"issue":"fmn-20261120-0900","repo":"other-project","decision":"send_back"}' '{"issue":"fmn-20261120-0900","repo":"my-app","decision":"overridden"}' > "$T/qa/screener/log.jsonl"
 out="$(QA_HOME="$T/qa" "$F" retro "$P" fmn-20261120-0900 2>&1)"
-[ "$(jq -c '[.checker_blocks,.checker_passes,.coder_tasks,.coder_stuck,.qa_sends,.qa_verdicts[0],.screener_send_backs]' "$J/retro.json")" = '[1,1,2,1,1,"fail at green",1]' ] \
-  && ok "retro counts the job's rounds, coder tasks, QA verdicts and screener send-backs" || bad "retro numbers" "$(cat "$J/retro.json") $out"
+[ "$(jq -c '[.checker_blocks,.checker_passes,.coder_tasks,.coder_stuck,.qa_contracts,.qa_verdicts[0],.screener_send_backs,.screener_overruled]' "$J/retro.json")" = '[1,1,2,1,2,"fail at green",1,1]' ] \
+  && ok "retro counts rounds, coder tasks and QA verdicts, and each screener row once across QA rounds and only for this project" || bad "retro numbers" "$(cat "$J/retro.json") $out"
 grep -q 'checker blocks: 1' "$J/ctx/retro.task.md" && grep -q "lesson \"$P\" fmn-20261120-0900" "$J/ctx/retro.task.md" \
   && ok "retro writes a task file with the numbers and the exact command" || bad "retro task" "$(cat "$J/ctx/retro.task.md")"
 L="$P/.foreman/habits.jsonl"
@@ -634,6 +675,8 @@ for bad_args in "nobody|out/check-r1.md|A lesson about a seat that does not exis
   IFS='|' read -r a e t <<<"$bad_args"
   "$F" lesson "$P" fmn-20261120-0900 "$a" "$e" "$t" >/dev/null 2>&1 && bad "lesson refused: $a $e" || ok "lesson refused: $a / $e / ${t:0:28}"
 done
+ln -s "$P/.foreman/project.yaml" "$J/out/link.md"
+"$F" lesson "$P" fmn-20261120-0900 owner out/link.md "The evidence for this lesson is a link out of the job folder." >/dev/null 2>&1 && bad "lesson refused: evidence that is a link out of the job folder" || ok "lesson refused: evidence that is a link out of the job folder"
 "$F" lesson "$P" fmn-20261120-0900 coder out/code-1.md "The coder stopped and said it was stuck after three tries, as told." >/dev/null 2>&1
 "$F" lesson "$P" fmn-20261120-0900 checker out/check-r1.md "The checker ran the verify command before reading any code." >/dev/null 2>&1
 out="$("$F" lesson "$P" fmn-20261120-0900 crew LOG.md "A fourth lesson for the same job, which is over the cap of three." 2>&1)"

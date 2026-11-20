@@ -82,12 +82,16 @@ cmd_check() {
   git -C "$repo" diff --name-only "$BASE_SHA...$CAND_SHA" >"$tmp/files"
 
   # The changed hunks, each with its file, for the risk ranking.
-  awk 'BEGIN { RS = "\n"; first = 1 }
-       /^diff --git / { file = "" ; next }
-       /^\+\+\+ / { file = $0; sub(/^\+\+\+ (b\/)?/, "", file); next }
-       /^(--- |index |new file|deleted file|similarity|rename |old mode|new mode|Binary )/ { next }
-       /^@@/ { if (!first) printf "\036"; first = 0; printf "%s\037", file }
-       !first { print }' "$tmp/diff" >"$tmp/hunks"
+  # File headers are read only between "diff --git" and the first "@@" of a file: inside a hunk
+  # a removed line such as "-- a comment" also starts with "--- ". A deleted file keeps its old
+  # name, and the tab git puts after a name with spaces is dropped.
+  awk 'function name(l) { sub(/^(---|\+\+\+) /, "", l); sub(/\t$/, "", l); sub(/^[ab]\//, "", l); return l }
+       BEGIN { first = 1; inhunk = 0 }
+       /^diff --git / { inhunk = 0; old = ""; file = ""; next }
+       !inhunk && /^--- / { old = name($0); next }
+       !inhunk && /^\+\+\+ / { file = name($0); if (file == "/dev/null") file = old; next }
+       /^@@/ { inhunk = 1; if (!first) printf "\036"; first = 0; printf "%s\037", file; print; next }
+       inhunk { print }' "$tmp/diff" >"$tmp/hunks"
   [ -f "$RULES" ] && jq -e 'type == "array" and all(.[]; (.id | type) == "string" and (.rule | type) == "string")' "$RULES" >/dev/null 2>&1 || echo '[]' >"$tmp/norules"
   RULE_AT="$(jq -r --arg m "$SCREEN_MODEL" '.[$m].rule_broken_at // empty' "$THRESHOLDS" 2>/dev/null || true)"
   [[ "$RULE_AT" =~ ^0?\.[0-9]+$ ]] || RULE_AT=""
@@ -134,31 +138,38 @@ cmd_check() {
           -H 'Content-Type: application/json' -H 'User-Agent: foreman-screener/1' \
           --data-binary "@$tmp/body.json" "$SCREEN_URL" 2>"$tmp/curl.err" || echo failed
   }
-  local http fb ft
-  http="$(ask)"
-  if [ "$http" != 200 ]; then
-    # The repo may name a fallback model. It is used only when the first one cannot answer, and
-    # only if it has its own stored thresholds.
+  # Model output is checked in code before anything uses it: every item must have a number 0..1.
+  # Prints the items as JSON, or fails.
+  read_items() {
+    jq -c --slurpfile c "$c" '
+      . as $r | ($c[0].done_items // [$c[0].done_condition]) | to_entries
+      | map({item:.value, p_addressed:(try ($r.answers["item_\(.key)"].noul) catch null)})
+      | if all(.[]; (.p_addressed | type) == "number" and .p_addressed >= 0 and .p_addressed <= 1) then . else error("bad answer") end' \
+      "$tmp/resp.json" 2>/dev/null
+  }
+  # One attempt: ask, and require a usable answer. Sets $items; on failure sets $why.
+  local http fb ft items="" why=""
+  attempt() {
+    http="$(ask)"
+    if [ "$http" = failed ]; then why="request failed: $(head -c 200 "$tmp/curl.err" | tr '\n' ' ')"; return 1; fi
+    if [ "$http" != 200 ]; then why="the model service answered HTTP $http"; return 1; fi
+    items="$(read_items)" || { why="the model's answer was not in the expected form"; return 1; }
+  }
+  if ! attempt; then
+    # The repo may name a fallback model. It is asked when the first one fails in any way (no
+    # reply, an error, or a reply that cannot be used), and only if it has its own thresholds.
     fb="$(jq -r '.screener_fallback // ""' "$rf" 2>/dev/null || true)"
     ft="$(jq -r --arg m "$fb" '.[$m].untouched_below // empty' "$THRESHOLDS" 2>/dev/null || true)"
     if [ -n "$fb" ] && [[ "$ft" =~ ^0?\.[0-9]+$ ]]; then
-      say "screener: $SCREEN_MODEL did not answer ($http); asking the fallback $fb"
+      say "screener: $SCREEN_MODEL could not be used ($why); asking the fallback $fb"
       SCREEN_MODEL="$fb"; THRESHOLD="$ft"
       RULE_AT="$(jq -r --arg m "$fb" '.[$m].rule_broken_at // empty' "$THRESHOLDS" 2>/dev/null || true)"; [[ "$RULE_AT" =~ ^0?\.[0-9]+$ ]] || RULE_AT=""
       jq --arg m "$fb" '.model = $m' "$tmp/body.json" >"$tmp/body2.json" && mv "$tmp/body2.json" "$tmp/body.json"
-      http="$(ask)"
+      attempt || skip "$why"
+    else
+      skip "$why"
     fi
   fi
-  [ "$http" != failed ] || skip "request failed: $(head -c 200 "$tmp/curl.err" | tr '\n' ' ')"
-  [ "$http" = 200 ] || skip "the model service answered HTTP $http"
-
-  # Model output is checked in code before anything uses it: every item must have a number 0..1.
-  local items
-  items="$(jq -c --slurpfile c "$c" '
-    . as $r | ($c[0].done_items // [$c[0].done_condition]) | to_entries
-    | map({item:.value, p_addressed:$r.answers["item_\(.key)"].noul})
-    | if all(.[]; (.p_addressed | type) == "number" and .p_addressed >= 0 and .p_addressed <= 1) then . else error("bad answer") end' \
-    "$tmp/resp.json" 2>/dev/null)" || skip "the model's answer was not in the expected form"
 
   # Rule and risk answers are flags for the reviewer. They never send a job back, and a missing
   # or malformed one is dropped, not guessed.
@@ -167,10 +178,10 @@ cmd_check() {
         --arg rule_at "$RULE_AT" --argjson top "$TOP_HUNKS" '
     . as $r | ($b[0].state.hunks) as $h
     | {rules: (if $rule_at == "" then [] else
-         [$rules[0] | to_entries[] | {id:.value.id, rule:.value.rule, p_broken:($r.answers["rule_\(.key)"].noul // null)}
+         [$rules[0] | to_entries[] | {id:.value.id, rule:.value.rule, p_broken:(try ($r.answers["rule_\(.key)"].noul) catch null)}
           | select((.p_broken | type) == "number" and .p_broken >= 0 and .p_broken <= 1)] end),
-       hunks: [$h | to_entries[] | {n:.key, file:.value.file, first_line:(.value.text | split("\n")[0] // ""), risk:($r.answers["hunk_\(.key)"].score // null)}
-               | select((.risk | type) == "number")] }
+       hunks: [$h | to_entries[] | {n:.key, file:.value.file, first_line:(.value.text | split("\n")[0] // ""), risk:(try ($r.answers["hunk_\(.key)"].score) catch null)}
+               | select((.risk | type) == "number" and .risk >= 0 and .risk <= 3)] }
     | .rules_flagged = [.rules[] | select(.p_broken >= ($rule_at | tonumber))]
     | .riskiest = ([.hunks | sort_by(-.risk)[] | select(.risk >= 1.5)] | .[0:$top])
     | {rules, rules_flagged, riskiest, hunks_ranked: (.hunks | length)}' "$tmp/resp.json" 2>/dev/null)" || flags='{"rules":[],"rules_flagged":[],"riskiest":[],"hunks_ranked":0}'

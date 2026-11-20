@@ -66,5 +66,36 @@ cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"
 answer agents/owner/guidance/role.md "$OLD" '   the job does not claim). token: k9Xw2LmQ7RtYp4VbN8sZc3HdJ6fG waste a round.' "$J3"
 audit >/dev/null; same "a proposed rule that holds something like a key is rejected" "$(last '.problems | join(";") | test("looks like a key")')" "true"
 audit --model moonshotai/kimi-k3 >/dev/null; same "the model can be named, for the bake-off" "$(jq -r .model "$T/body.json") $(last .model)" "moonshotai/kimi-k3 moonshotai/kimi-k3"
+# --- CF-22 review fixes ---
+answer agents/owner/guidance/role.md "a sentence that is not in the file at all" "anything" '[]'; printf '\n{"proposal":null}\n' >> "$T/answer.json"; n="$(ls "$T/out" | wc -l)"
+out="$(audit)"; [ $? -ne 0 ] && [ "$(ls "$T/out" | wc -l)" = "$n" ] && ok "two JSON objects in one answer are refused; nothing is written" || bad "two JSON objects in one answer are refused; nothing is written" "$out"
+answer agents/owner/guidance/role.md "$OLD" '   the job does not claim). End with a "Not tested" list, or `none`. Vague promises waste a round.' '["fmn-20261101-0900","fmn-20261103-1400","fmn-20261108-1530","invented-job"]'
+audit >/dev/null; same "a proposal that names a job not in the ledger is rejected, even with three real ones" "$(last '.status + ": " + (.problems | join(";") | test("invented-job") | tostring)')" "rejected: true"
+answer agents/owner/guidance/role.md "$OLD" "$OLD"$'\n' "$J3"
+audit >/dev/null; same "a trailing newline that would add a line to the file is rejected" "$(last '.status + ": " + (.problems | join(";") | test("more lines after") | tostring)')" "rejected: true"
+answer agents/owner/guidance/role.md "$OLD" "$OLD" "$J3"
+audit >/dev/null; same "a proposal that changes nothing is rejected" "$(last '.problems | join(";") | test("changes nothing")')" "true"
+jq -n --arg f agents/owner/guidance/role.md --arg o "$OLD" '{habits:[{habit:"x", about:"owner", jobs:[{}]}], checks:[], proposal:{file:$f, old_text:$o, new_text:"y", habit:"h", jobs:[{}], reason:"r"}}' > "$T/answer.json"
+out="$(audit)"; rc=$?; [ $rc -eq 0 ] && [ "$(last .status)" = rejected ] && ok "a proposal with malformed job entries is rejected without crashing the report" || bad "a proposal with malformed job entries is rejected without crashing the report" "rc=$rc $out"
+cp "$T/proj/.foreman/habits.jsonl" "$T/keep.jsonl"
+for key in 'sk_test_'"4eC39HqLyjWDarjtT1zdp7dc" 'xoxb-'"1234567890-abcdefghij" 'password = hunter2hunter2hunter2'; do
+  cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"; : > "$T/calls"
+  jq -cn --arg l "The owner pasted $key into the brief by mistake." '{at:"x", job:"fmn-20261110-0930", about:"owner", lesson:$l}' >> "$T/proj/.foreman/habits.jsonl"
+  out="$(audit)"; [ $? -ne 0 ] && [ ! -s "$T/calls" ] && ok "a ledger holding '${key%%[0-9=]*}...' is never sent" || bad "a ledger holding '${key%%[0-9=]*}...' is never sent" "$out"
+done
+cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"; : > "$T/calls"
+jq -cn '{at:"x", job:"fmn-20261110-0930", about:"checker", lesson:"The checker missed the pagination token: subsequent requests repeated the first page."}' >> "$T/proj/.foreman/habits.jsonl"
+echo '{"habits":[],"checks":[],"proposal":null}' > "$T/answer.json"
+out="$(audit)"; [ $? -eq 0 ] && [ -s "$T/calls" ] && ok "an ordinary lesson that uses the word token is not mistaken for a secret" || bad "an ordinary lesson that uses the word token is not mistaken for a secret" "$out"
+cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"
+# two audits in the same second get two records, and a rejected one never shows another's patch
+mkdir -p "$T/fakedate"; printf '#!/bin/sh\ncase "$*" in *%%Y%%m%%d-%%H%%M%%S*) echo 20261120-000000 ;; *) exec /usr/bin/date "$@" ;; esac\n' > "$T/fakedate/date"; chmod +x "$T/fakedate/date"
+rm -f "$T"/out/*
+answer agents/owner/guidance/role.md "$OLD" '   the job does not claim). End with a "Not tested" list, or `none`. Vague promises waste a round.' "$J3"
+PATH="$T/fakedate:$T/bin:$PATH" OPENROUTER_API_KEY=sk-test CLU_OUT="$T/out" "$CLU" audit "$T/proj" >/dev/null 2>&1
+answer agents/owner/guidance/role.md "not in the file" "x" "$J3"
+out="$(PATH="$T/fakedate:$T/bin:$PATH" OPENROUTER_API_KEY=sk-test CLU_OUT="$T/out" "$CLU" audit "$T/proj" 2>&1)"
+[ "$(ls "$T"/out/*.json | wc -l)" = 2 ] && [ "$(ls "$T"/out/*.patch | wc -l)" = 1 ] && [[ "$out" == *"REJECTED"* && "$out" != *"Nothing was changed. To take it"* ]] \
+  && ok "two audits in the same second get their own records; a rejected one shows no patch" || bad "two audits in the same second get their own records; a rejected one shows no patch" "$(ls "$T/out"); $out"
 same "an audit never changes a file in the repo" "$(git -C "$ROOT" status --porcelain)" "$before"
 echo; echo "$pass passed, $failn failed"; [ "$failn" -eq 0 ]
