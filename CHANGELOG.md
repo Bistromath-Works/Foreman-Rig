@@ -25,7 +25,9 @@
   the candidate had locked was never deleted. The red gate now runs the same bytes and file
   mode as the green gate, and reversing a fix never removes a test that is meant to stay. The mutation gate
   rebuilds its copy from git, so a fix made of line-ending rules reverses correctly. Only the
-  repo's own `<QA home>/env/<repo>.env` is readable inside the sandbox.
+  repo's own `<QA home>/env/<repo>.env` is readable inside the sandbox. The red gate never
+  deletes a base folder to place the repro check, and a repo with a submodule no longer breaks
+  the mutation gate.
 
 - **Optional coder seat (CF-12).** `scripts/foreman init <project> --coder` adds a fourth seat
   for a smaller, cheaper model, usually a local one. The owner hands it small, fully specified

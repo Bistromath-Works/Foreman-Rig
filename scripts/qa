@@ -129,6 +129,7 @@ under() { [ "$1" = "$2" ] || [[ "$1/" == "${2%/}/"* ]]; }
 check_box() {
   local rf="$1" repo="$2" k p c q home qa src ro=() rw=() keep=()
   case "$repo" in file://*%*) die "repo $repo: write a local repo as a plain path, not a file:// address with % codes" ;; esac
+  case "$repo" in file:///*|file://localhost/*) ;; file://*) die "repo $repo: a file:// address must start with file:/// or file://localhost/" ;; esac
   repo="${repo#file://localhost}"; repo="${repo#file://}"
   home="$(realpath -m "$HOME")"; qa="$(realpath -m "$QA_HOME")"; src=""
   [ ! -d "$repo" ] || src="$(realpath -m "$repo")"
@@ -281,23 +282,20 @@ check() {
 
 # Files the candidate changed that are not tests and not the repro check (the fix itself),
 # NUL-separated. A rename counts as one file removed and one added, so reversing restores both.
+# test_paths go to git exactly as the operator wrote them, in any pathspec form, and the files
+# they select are taken out of the list here.
 fix_files() {
-  local run="$1" spec=()
-  mapfile -d '' -t spec < <(kept_spec "$run")
-  g -C "$run/src/repo" diff -z --no-renames --name-only "$(cat "$run/base.sha")" HEAD -- . "${spec[@]}"
-}
-
-# Pathspecs that leave out what a fix reversal must keep: the tests and the repro check.
-kept_spec() {
-  local run="$1" p
-  while read -r p; do
-    case "$p" in
-      "") ;;
-      ":("*) printf ':(exclude,%s\0' "${p#:(}" ;;   # already has pathspec magic: join it, do not nest it
-      *) printf ':(exclude)%s\0' "$p" ;;
-    esac
-  done < <(jq -r '.test_paths[]? // empty' "$run/repo.json")
-  p="$(jq -r .repro_check "$run/contract.json")"; [ -z "$p" ] || printf ':(exclude,literal)%s\0' "$p"
+  local run="$1" base f chk tests=()
+  local -A skip=()
+  base="$(cat "$run/base.sha")"; chk="$(jq -r .repro_check "$run/contract.json")"
+  [ -z "$chk" ] || skip["$chk"]=1
+  mapfile -t tests < <(jq -r '.test_paths[]? // empty | select(length > 0)' "$run/repo.json")
+  if [ "${#tests[@]}" -gt 0 ]; then
+    g -C "$run/src/repo" diff -z --no-renames --name-only "$base" HEAD -- "${tests[@]}" >"$run/test-files" || return 1
+    while IFS= read -r -d '' f; do skip["$f"]=1; done <"$run/test-files"
+  fi
+  g -C "$run/src/repo" diff -z --no-renames --name-only "$base" HEAD >"$run/changed-files" || return 1
+  while IFS= read -r -d '' f; do [ -n "${skip[$f]:-}" ] || printf '%s\0' "$f"; done <"$run/changed-files"
 }
 
 cmd_new() {
@@ -404,7 +402,11 @@ gate_red() {
   # copy of the check has the same bytes and mode as the one the green gate will run.
   [ -f "$run/src/repo/$chk" ] && [ ! -L "$run/src/repo/$chk" ] && inside "$run/src/repo" "$chk" \
     || { record "$run" red fail "could not read repro check $chk from the candidate commit"; return; }
-  mkdir -p "$(dirname "$run/src/base/$chk")" && rm -rf "$run/src/base/$chk" \
+  # Never delete a folder that base has at this path: removing base's own files could make
+  # the check fail for a reason that is not the bug.
+  [ ! -d "$run/src/base/$chk" ] \
+    || { record "$run" red fail "repro check path $chk is a folder on base; the check cannot be placed without deleting base files"; return; }
+  mkdir -p "$(dirname "$run/src/base/$chk")" && rm -f "$run/src/base/$chk" \
     || { record "$run" red fail "could not make room for repro check $chk in the base copy"; return; }
   cp -p "$run/src/repo/$chk" "$run/src/base/$chk" \
     || { record "$run" red fail "could not copy repro check $chk into the base copy"; return; }
@@ -429,12 +431,22 @@ gate_green() {
 }
 
 # reverse_fix <run> <file>...: in the fresh mutant copy, put the named files back to base.
+# Each file is set in the index by its exact name (a pathspec would also match what lies under
+# a folder of that name): taken out if base has no file there, else given base's entry. Every
+# other file of the candidate must still be there afterwards. Then the copy is written out new.
 reverse_fix() {
-  local run="$1" m="$1/src/mutant" f; shift
+  local run="$1" m="$1/src/mutant" base f e; shift
+  base="$(cat "$run/base.sha")"
   local -A fix=(); for f in "$@"; do fix["$f"]=1; done
-  # Empty the copy (tracked files only; a fresh checkout holds nothing else), reset, rewrite.
-  ( cd "$m" && g ls-files -z | xargs -0 -r rm -f -- ) || return 1
-  g -C "$m" --literal-pathspecs reset -q "$(cat "$run/base.sha")" -- "$@" || return 1
+  # Empty the copy: tracked files only, by full path. A submodule's empty folder is left.
+  while IFS= read -r -d '' f; do
+    if [ -d "$m/$f" ] && [ ! -L "$m/$f" ]; then rmdir "$m/$f" 2>/dev/null || true; else rm -f -- "$m/$f" || return 1; fi
+  done < <(g -C "$m" ls-files -z)
+  for f in "$@"; do g -C "$m" update-index --force-remove -- "$f" || return 1; done
+  for f in "$@"; do
+    e="$(g -C "$run/src/repo" --literal-pathspecs ls-tree "$base" -- "$f" | awk '$2 != "tree" { print $1 "," $3; exit }')"
+    [ -z "$e" ] || g -C "$m" update-index --add --cacheinfo "$e,$f" || return 1
+  done
   while IFS= read -r -d '' f; do
     [ -n "${fix[$f]:-}" ] || g -C "$m" --literal-pathspecs ls-files --error-unmatch -- "$f" >/dev/null 2>&1 \
       || { echo "reversing the fix would drop $f, which is not part of the fix"; return 1; }

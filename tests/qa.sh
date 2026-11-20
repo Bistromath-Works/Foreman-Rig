@@ -474,7 +474,7 @@ git -C "$R" checkout -q -b base5 "$BASE"; mkdir -p "$R/tests/test_empty_middle.p
 git -C "$R" add -A; git -C "$R" commit -qm base5; BASE5="$(git -C "$R" rev-parse HEAD)"; git -C "$R" checkout -q main
 jq --arg b "$BASE5" '.base = $b' "$(contract good)" > "$T/dirbase.json"
 id="$(new "$T/dirbase.json")"; for g in boot red; do "$QA" gate "$id" $g >/dev/null 2>&1; done
-[ -f "$QA_HOME/runs/$id/gates/red.json" ] && ok "a repro path that is a folder on base still gets a red result" || bad "a repro path that is a folder on base still gets a red result"
+same "a repro path that is a folder on base is a red failure; the folder is not deleted" "$(jq -r .status "$QA_HOME/runs/$id/gates/red.json" 2>/dev/null) $([ -f "$QA_HOME/runs/$id/src/base/tests/test_empty_middle.py/keep" ] && echo kept)" "fail kept"
 "$QA" verdict "$id" >/dev/null 2>&1
 jq --arg r "$R" '.sandbox_rw = [$r]' "$T/keep.json" > "$QA_REPOS/fixture.json"
 jq --arg r "file://localhost${R//tmp./tmp%2E}" '.repo = $r' "$(contract good)" > "$T/furl.json"
@@ -483,6 +483,41 @@ cp "$T/keep.json" "$QA_REPOS/fixture.json"
 jq '.sandbox_net = false | .boot_cmd = "test -z \"$(find /run -type s 2>/dev/null)\""' "$T/keep.json" > "$QA_REPOS/fixture.json"
 id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1
 same "no service socket is visible under /run" "$(jq -r .status "$QA_HOME/runs/$id/gates/boot.json")" "pass"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+
+echo "# review round 5"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"
+# An untouched submodule in the repo does not break the fix reversal.
+git -C "$R" checkout -q -b base6 "$BASE"
+git -C "$R" update-index --add --cacheinfo "160000,$BASE,vendor/lib"; git -C "$R" commit -qm base6; BASE6="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q -b withsub
+printf 'def full_name(first, middle, last):\n    return " ".join(p for p in (first, middle, last) if p)\n' > "$R/name.py"
+printf '%s\n' "$repro" > "$R/tests/test_empty_middle.py"; git -C "$R" add name.py tests; git -C "$R" commit -qm withsub; git -C "$R" checkout -q -f main
+jq --arg b "$BASE6" '.base = $b' "$(contract withsub)" > "$T/sub.json"
+id="$(new "$T/sub.json")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "an untouched submodule does not break the fix reversal" "$(jq -r .status "$QA_HOME/runs/$id/gates/mutation.json" 2>/dev/null)" "pass"
+"$QA" verdict "$id" >/dev/null 2>&1
+# A fix that turns a folder into a file: a kept test that lived in the folder on base stays gone.
+git -C "$R" checkout -q -b base7 "$BASE"; mkdir "$R/feat"; echo t > "$R/feat/test.txt"; echo i > "$R/feat/impl.txt"
+git -C "$R" add -A; git -C "$R" commit -qm base7; BASE7="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q -b dirfile; git -C "$R" rm -rq feat; echo f > "$R/feat"
+printf 'def full_name(first, middle, last):\n    return " ".join(p for p in (first, middle, last) if p)\n' > "$R/name.py"
+printf '%s\n' "$repro" > "$R/tests/test_empty_middle.py"; git -C "$R" add -A; git -C "$R" commit -qm dirfile; git -C "$R" checkout -q main
+jq '.test_paths = ["tests/", "feat/test.txt"]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+jq --arg b "$BASE7" '.base = $b' "$(contract dirfile)" > "$T/dirfile.json"
+id="$(new "$T/dirfile.json")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+m="$QA_HOME/runs/$id/src/mutant"
+same "reversing a folder-to-file fix restores the fix's files and no kept test" "$(jq -r .status "$QA_HOME/runs/$id/gates/mutation.json" 2>/dev/null) $([ -f "$m/feat/impl.txt" ] && echo impl) $([ -e "$m/feat/test.txt" ] && echo test-came-back)" "pass impl "
+"$QA" verdict "$id" >/dev/null 2>&1
+# Test paths in git's short pathspec form are honoured too.
+jq '.test_paths = [":/tests/**"]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract extratest)")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "a test path in git's short form is left out of the fix files" "$(tr '\0' ' ' < "$QA_HOME/runs/$id/fix-files" 2>/dev/null)" "name.py "
+"$QA" verdict "$id" >/dev/null 2>&1
+jq --arg r "$R" '.sandbox_rw = [$r]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+jq --arg r "file://example.invalid$R" '.repo = $r' "$(contract good)" > "$T/furl.json"
+out="$("$QA" new "$T/furl.json" 2>&1)"; [[ "$out" == *"file://"* && "$out" != CF-99* ]] && ok "a file:// source naming another host is refused" || bad "a file:// source naming another host is refused" "$out"
 cp "$T/keep.json" "$QA_REPOS/fixture.json"
 SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
 
