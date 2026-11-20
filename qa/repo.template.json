@@ -9,5 +9,7 @@
   "teardown_cmd": "",
   "test_paths": [
     "SET-ME"
-  ]
+  ],
+  "sandbox_ro": [],
+  "sandbox_rw": []
 }

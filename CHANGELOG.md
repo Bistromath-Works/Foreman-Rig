@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **QA gates run in a sandbox (CF-11).** Every command from a repo's QA settings, and so all
+  candidate code, now runs inside bubblewrap: the disk is read-only, the home folder is hidden,
+  the environment is cleared, and only the checkout and the evidence folder are writable.
+  Candidate code can no longer write a gate result, push to the source repo or read the
+  operator's keys. New repo settings `sandbox_ro` and `sandbox_rw` name the tool and cache
+  folders a repo needs. **Upgrade:** install `bwrap`, add each repo's tool folders to
+  `sandbox_ro`, and have `teardown_cmd` write to `$QA_EVIDENCE`, not `$QA_RUN`. The seats
+  themselves still run as your user; see "The sandbox" in `qa/README.md`.
+
 - **Optional coder seat (CF-12).** `scripts/foreman init <project> --coder` adds a fourth seat
   for a smaller, cheaper model, usually a local one. The owner hands it small, fully specified
   pieces (files it may change, numbered rules, one command that must pass); the coder writes

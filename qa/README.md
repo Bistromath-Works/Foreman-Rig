@@ -91,8 +91,11 @@ QA rig's own clone. `""` means none. `boot_cmd`, `check_cmd` and `suite_cmd` are
 | `suite_cmd` | The full existing suite |
 | `smoke_cmd` | End-to-end smoke; save recordings and screenshots to `$QA_EVIDENCE` |
 | `mutation_cmd` | Optional; `{files}` = the files the fix changed; must exit non-zero when too many mutants survive (Stryker: `thresholds.break`) |
-| `teardown_cmd` | Stops whatever boot started; always runs before the clones are deleted |
+| `teardown_cmd` | Cleans up after the run; always runs before the clones are deleted. `$QA_RUN` is read-only, so write to `$QA_EVIDENCE` |
 | `test_paths` | Git pathspecs for test files, so the mutation gate can reverse the fix and keep the tests |
+| `sandbox_ro` | Folders under your home folder the commands may read, e.g. where node or pnpm live. See "The sandbox" |
+| `sandbox_rw` | Folders the commands may write, for a QA-only cache. See "The sandbox" |
+| `sandbox_net` | `false` cuts the network off for every command. Default `true` |
 
 ## Sending work (the build side)
 
@@ -112,8 +115,8 @@ Three steps per project, for example Magnus:
 
 1. **Teach the QA rig the repo.** Run `scripts/qa repo magnus-nova-service` and fill in its
    commands. The QA clone has no `.env.local`. If the app needs env values to build or test,
-   point `setup_cmd` at a QA-only env file holding only non-secret local values (local Supabase
-   URL and anon key). Never copy the project's own `.env.local`: it holds real keys.
+   point `setup_cmd` at a QA-only env file in `~/.foreman-qa/env/` holding only non-secret local
+   values (local Supabase URL and anon key). That folder is readable inside the sandbox. Never copy the project's own `.env.local`: it holds real keys.
 2. **Tell the owner.** In the project's `.foreman/project.yaml`, set
    `qa_cmd: /path/to/foreman-rig/scripts/qa`. The owner then sends every candidate to the QA rig
    before the checker (owner role, step 4b). A running owner reads its role at startup, so
@@ -128,14 +131,50 @@ Three steps per project, for example Magnus:
 
 Turn the gate off with `scripts/qa hook /path/to/project off`.
 
-## Not a sandbox (yet)
+## The sandbox
 
-The gates' rules hold against a seat that follows its role and against a weak or wrong test.
-They do not hold against a hostile process. The seats, and the candidate's own code that the
-gates run, run as your user. Such a process could write a gate result file by hand, or push to
-the source path the contract names. The fix is to run the gates under a separate OS user, or
-inside the verification container with no write path to the source (CF-11). Until then, point
-the QA rig only at code from your own build rigs.
+Every command from a repo's settings runs inside a [bubblewrap](https://github.com/containers/bubblewrap)
+sandbox, and so does all candidate code, since those commands are what run it. Inside it:
+
+| What | Inside the sandbox |
+| --- | --- |
+| The checkout being tested | Writable |
+| `$QA_EVIDENCE` | Writable |
+| The run folder `$QA_RUN` (gate results, verdict, contract, probe checks, audit note) | Read-only |
+| The rest of the disk | Read-only |
+| Your home folder, `/tmp`, `/run` | Empty scratch space, thrown away after each command |
+| Folders in `sandbox_ro` and `<QA home>/env/` | Read-only |
+| Folders in `sandbox_rw` | Writable |
+| Environment variables | Cleared, except `PATH`, `HOME`, `USER`, `LANG`, `QA_RUN`, `QA_EVIDENCE` |
+| Processes | Its own list; anything a command leaves running is stopped when the command ends |
+
+So candidate code cannot write a gate result or the verdict, cannot write to or push to the
+source repo, and cannot read your keys, tokens or other projects. `tests/qa.sh` has a candidate
+that tries each of these and checks that every one is blocked.
+
+`scripts/qa new` refuses to start a run if `bwrap` is missing or cannot start a sandbox. There
+is no switch to run without it.
+
+Because the home folder is hidden, name the tools a repo needs in `sandbox_ro`, for example
+`["~/.nvm", "~/.local/bin"]`. A missing tool shows up as "command not found" in the setup log.
+Use `sandbox_rw` only for a cache kept for the QA rig alone, such as a pnpm store at
+`~/.cache/foreman-qa/pnpm-store`, never for a folder your own work uses. `scripts/qa` refuses a
+`sandbox_rw` of `/`, the home folder, or anything holding or inside the QA home.
+
+What the sandbox does not cover:
+
+- **The seats.** The gatekeeper, prober and auditor run as your user, outside the sandbox. A
+  seat that ignored its role could still write a gate file by hand. Closing that needs the
+  seats under a separate OS user.
+- **The network.** It is shared by default, so candidate code can reach the internet and
+  services on `localhost` (a local Supabase, for example). Set `"sandbox_net": false` in a
+  repo's settings to cut the network off for every command. The repo's setup must then work
+  offline (`pnpm install --offline` from the QA cache). Otherwise give QA its own local
+  database, not one you use.
+- **A long-lived boot.** A server started by `boot_cmd` stops when that command ends. Start
+  what a check needs inside the command that runs it, until the verification container exists.
+- **The shared cache.** A `sandbox_rw` cache is shared between runs, so one run could leave
+  bad files in it for the next.
 
 ## Not in v0.1
 
