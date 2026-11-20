@@ -141,6 +141,7 @@ sandbox, and so does all candidate code, since those commands are what run it. I
 | The checkout being tested | Writable |
 | `$QA_EVIDENCE` | Writable |
 | The run folder `$QA_RUN` (gate results, verdict, contract, probe checks, audit note) | Read-only |
+| The rest of the QA home, other runs included | Hidden |
 | The rest of the disk | Read-only |
 | Your home folder, `/tmp`, `/run` | Empty scratch space, thrown away after each command |
 | Folders in `sandbox_ro` and `<QA home>/env/` | Read-only |
@@ -163,13 +164,21 @@ Use `sandbox_rw` only for a cache kept for the QA rig alone, such as a pnpm stor
 
 `scripts/qa new` refuses sandbox settings that would open a hole:
 
-- a folder that is, or holds, the home folder, `/run` or `/tmp`, or lies inside `/run`
-- a writable folder that overlaps the QA home or the source repo
+- a folder that is, or holds, the home folder, `/run`, `/tmp`, `/proc`, `/dev` or `/sys`, or
+  lies inside `/run`, `/proc`, `/dev` or `/sys`
+- a writable folder that overlaps the QA home, this repo's own folder, the repo settings or the
+  source repo
+- a path that ends in a space
 - any folder inside a writable one
 - a `sandbox_net` that is not `true` or `false`
 
 The folders are resolved once, when the run starts. If one has become a link to somewhere else
 by the time a later gate runs, that gate's command is refused.
+
+Outside the sandbox, the script runs git without your own git settings, so a filter, diff
+driver or hook you have defined is never run on the candidate's files because its
+`.gitattributes` names it. Only the first clone uses your settings, since it may need your
+credentials, and it checks nothing out.
 
 Outside the sandbox, the script itself only touches a checkout before any candidate code has
 run in it. The repro check is read from the candidate commit, the fix is reversed for the
@@ -190,6 +199,11 @@ What the sandbox does not cover:
   repo's settings to cut the network off for every command. The repo's setup must then work
   offline (`pnpm install --offline` from the QA cache). Otherwise give QA its own local
   database, not one you use.
+- **Files anyone on the machine can read.** The disk outside your home folder, `/tmp` and
+  `/run` is visible, read-only. That includes the source repo if it lives outside your home
+  folder, and any service socket kept outside those folders.
+- **Two runs at once.** The checks on sandbox folders assume one run at a time, which is the
+  gatekeeper's rule. Two runs with different settings could weaken each other's.
 - **A long-lived boot.** A server started by `boot_cmd` stops when that command ends. Start
   what a check needs inside the command that runs it, until the verification container exists.
 - **The shared cache.** A `sandbox_rw` cache is shared between runs, so one run could leave

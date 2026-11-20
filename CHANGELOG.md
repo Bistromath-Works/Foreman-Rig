@@ -12,7 +12,10 @@
   themselves still run as your user; see "The sandbox" in `qa/README.md`. The script's own
   unsandboxed steps (reading the repro check, reversing the fix, copying probe checks) now
   happen before any candidate code has run in a checkout, and unsafe sandbox settings are
-  refused when a run starts.
+  refused when a run starts. The script's own git calls ignore the operator's git settings.
+  Also fixed: an assertion early in a very long log was missed, an executable repro check
+  lost its executable bit, a fix that renames a file could not be reversed, and a checkout
+  the candidate had locked was never deleted.
 
 - **Optional coder seat (CF-12).** `scripts/foreman init <project> --coder` adds a fourth seat
   for a smaller, cheaper model, usually a local one. The owner hands it small, fully specified

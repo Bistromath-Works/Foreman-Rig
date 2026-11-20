@@ -290,6 +290,86 @@ mkdir -p "$T/nobwrap"; for b in bash jq git date cat mkdir cp timeout dirname ba
 out="$(PATH="$T/nobwrap" "$QA" new "$(contract good)" 2>&1)"; [[ "$out" == *"bwrap"* ]] && ok "no sandbox tool -> the run is refused, not run unprotected" || bad "no sandbox tool -> the run is refused, not run unprotected" "$out"
 same "source repo untouched by the cheating run" "$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)" "$SRC_STATE"
 
+echo "# review round 2"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"
+# longlog: the assertion is early in a very long log.
+branch longlog
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+cat > tests/test_empty_middle.py <<'PY'
+import sys; sys.path.insert(0, ".")
+from name import full_name
+try:
+    assert full_name("Ada", "", "Lovelace") == "Ada Lovelace"
+except AssertionError:
+    print("AssertionError: double space")
+    for i in range(100000): print("noise line", i)
+    raise SystemExit(1)
+PY
+commit longlog
+id="$(new "$(contract longlog)")"; for g in boot red; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "an assertion early in a very long log still counts" "$(jq -r .status "$QA_HOME/runs/$id/gates/red.json" 2>/dev/null)" "pass"
+"$QA" verdict "$id" >/dev/null 2>&1
+# execbit: the repro check is run as a program, so it must stay executable in the base copy.
+branch execbit
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+{ echo '#!/usr/bin/env python3'; printf '%s\n' "$repro"; } > tests/test_empty_middle.py; chmod +x tests/test_empty_middle.py; commit execbit
+jq '.check_cmd = "./{check}"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract execbit)")"; for g in boot red; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "an executable repro check stays executable in the base copy" "$(jq -r .status "$QA_HOME/runs/$id/gates/red.json" 2>/dev/null)" "pass"
+"$QA" verdict "$id" >/dev/null 2>&1; cp "$T/keep.json" "$QA_REPOS/fixture.json"
+# renamed: the fix renames a file; reversing the fix must bring the old file back.
+git -C "$R" checkout -q -b base2 "$BASE"
+printf 'def join3(a, b, c):\n    return f"{a} {b} {c}"\n# a helper kept in its own module\n# so that the fix can rename it\n# line five\n# line six\n' > "$R/fmt.py"
+printf 'from fmt import join3\ndef full_name(first, middle, last):\n    return join3(first, middle, last)\n' > "$R/name.py"
+git -C "$R" add -A; git -C "$R" commit -qm base2; BASE2="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q -b renamed; git -C "$R" mv fmt.py joiner.py
+sed -i 's|return f"{a} {b} {c}"|return " ".join(p for p in (a, b, c) if p)|' "$R/joiner.py"
+printf 'from joiner import join3\ndef full_name(first, middle, last):\n    return join3(first, middle, last)\n' > "$R/name.py"
+printf '%s\n' "$repro" > "$R/tests/test_empty_middle.py"; git -C "$R" add -A; git -C "$R" commit -qm renamed; git -C "$R" checkout -q main
+jq --arg b "$BASE2" '.base = $b' "$(contract renamed)" > "$T/ren.json"
+id="$(new "$T/ren.json")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "reversing a fix that renames a file brings the old file back" "$(jq -r .status "$QA_HOME/runs/$id/gates/mutation.json" 2>/dev/null)" "pass"
+"$QA" verdict "$id" >/dev/null 2>&1
+# attrs: the commit names a git filter that the operator's own git config defines.
+branch attrs
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+echo '*.py filter=evil diff=evil' > .gitattributes; printf '%s\n' "$repro" > tests/test_empty_middle.py; commit attrs
+printf '[filter "evil"]\n\tsmudge = "touch %s; cat"\n\tclean = "touch %s; cat"\n[diff "evil"]\n\ttextconv = "touch %s; cat"\n\tcommand = "touch %s; true"\n' "$T/hostmark2" "$T/hostmark2" "$T/hostmark2" "$T/hostmark2" > "$T/gitcfg"
+id="$(GIT_CONFIG_GLOBAL="$T/gitcfg" "$QA" new "$(contract attrs)" 2>&1 | tail -1)"
+for g in boot red green mutation; do GIT_CONFIG_GLOBAL="$T/gitcfg" "$QA" gate "$id" $g >/dev/null 2>&1; done
+[ ! -e "$T/hostmark2" ] && ok "a git filter named by the commit is not run outside the sandbox" || bad "a git filter named by the commit is not run outside the sandbox"
+same "the run with git attributes still reaches the mutation gate" "$(jq -r .status "$QA_HOME/runs/$id/gates/mutation.json" 2>/dev/null)" "pass"
+"$QA" verdict "$id" >/dev/null 2>&1
+# A checkout the candidate locked against deletion is still cleaned up.
+jq '.boot_cmd = "python3 -c \"import name\" && mkdir -p locked/x && chmod 000 locked"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1; "$QA" verdict "$id" >/dev/null 2>&1
+[ ! -e "$QA_HOME/runs/$id/src" ] && ok "a checkout locked by the candidate is still deleted" || bad "a checkout locked by the candidate is still deleted"
+chmod -R u+rwx "$QA_HOME/runs/$id/src" 2>/dev/null; rm -rf "$QA_HOME/runs/$id/src"
+# Other runs are not visible from inside a run, wherever the QA home is.
+jq --arg h "$QA_HOME" '.boot_cmd = "test \"$(ls \($h)/runs | wc -l)\" = 1"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1
+same "a run cannot see the other runs" "$(jq -r .status "$QA_HOME/runs/$id/gates/boot.json")" "pass"
+mkdir -p "$T/sp "
+for pair in 'sandbox_net|null' 'sandbox_ro|["/proc"]' 'sandbox_ro|["/proc/1"]' 'sandbox_ro|["/dev/shm"]' 'sandbox_ro|["/sys"]' "sandbox_ro|[\"$T/sp \"]" "sandbox_rw|[\"$ROOT\"]" "sandbox_rw|[\"$ROOT/scripts\"]" "sandbox_rw|[\"$QA_REPOS\"]"; do
+  k="${pair%%|*}"; v="${pair#*|}"
+  jq --arg k "$k" --argjson v "$v" '.[$k] = $v' "$T/keep.json" > "$QA_REPOS/fixture.json"
+  out="$("$QA" new "$(contract good)" 2>&1)" && bad "refuses $k $v" "$out" || ok "refuses $k $v"
+done
+jq --arg r "$R" '.sandbox_rw = [$r]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+jq --arg r "file://$R" '.repo = $r' "$(contract good)" > "$T/furl.json"
+out="$("$QA" new "$T/furl.json" 2>&1)" && bad "refuses a writable folder over a file:// source repo" "$out" || ok "refuses a writable folder over a file:// source repo"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+
 echo "# contracts"
 c="$(contract good)"
 for pair in 'issue|"cf 9"' 'issue|"../x"' 'repro_check|"tests/x.py; rm -rf ~"' 'repro_check|"../outside.py"' 'candidate|"main; reboot"' 'reply_to|"nobody"' 'repo|"--upload-pack=x"' 'budget|{"wall_minutes":0,"tokens":1}'; do
