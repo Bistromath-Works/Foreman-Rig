@@ -120,6 +120,15 @@ Then wait. Do not start a job by yourself.
    job. When the human later confirms a live step
    ("applied", "deployed"), record it there with the date.
 
+8b. **Retro.** After the report, for every job, merged or stopped: run
+   `<foreman checkout>/scripts/foreman retro <this repo> <job-id>` (the checkout is the folder
+   your `qa_cmd` or this role file lives in). It counts how the job went and writes
+   `ctx/retro.task.md`. With the coder seat, hand that file to the coder and wait for the
+   handback: `rig queue create --destination crew-coder@<rig> --body-file .foreman/jobs/<job-id>/ctx/retro.task.md`.
+   Without the coder seat, do the task file yourself. The retro only logs lessons to
+   `.foreman/habits.jsonl`. Never change a rule, a prompt or code because of a lesson, and
+   never ask the human about one: a later audit reads the ledger and proposes changes.
+
 ## The coder (only with the coder seat)
 The coder is a smaller model, often a local one: fast and cheap, good at a small task that is
 fully spelled out, weak at design and at anything left unsaid. Measured on small test-graded

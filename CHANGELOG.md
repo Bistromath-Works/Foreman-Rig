@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Retro step and lessons ledger (CF-13, first part).** After every job the owner runs
+  `scripts/foreman retro <project> <job-id>`. It counts how the job went (checker blocks, coder
+  tasks, QA verdicts, screener send-backs) and writes a retro task. A cheap seat, the coder when
+  there is one, reads the job's records and logs up to three lessons with
+  `scripts/foreman lesson`, each tied to a file that shows it. Lessons go to
+  `<project>/.foreman/habits.jsonl`; `scripts/foreman habits <project>` lists them. This only
+  logs. No rule or prompt changes because of a lesson.
+
 - **Screener, first check (CF-14).** `scripts/qa send` can now ask a fast model (TypeSafe's Jev
   through OpenRouter) whether each done-condition item was worked on at all, and refuses to
   queue a QA run when one looks untouched. It can only send a job back; it never passes one,

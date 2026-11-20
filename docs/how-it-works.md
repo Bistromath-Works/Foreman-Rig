@@ -119,6 +119,7 @@ it. Design, schemas, money, security and anything the task cannot spell out stay
 | `PROJECT/.foreman/jobs/<job-id>/` | Spec, briefs, verdicts, decisions, `LOG.md`, `RESUME.md` | No, always: the owner writes its ledger while the checker works, so it must never be part of a commit. Files an older setup already tracks under `.foreman/` stay tracked as history and change only on a job branch |
 | `PROJECT/.foreman/STATE.md` | What is live, your answers, what waits on you, open work | No |
 | `PROJECT/.foreman/audits/` | Auditor reports and the merged-job count | No |
+| `PROJECT/.foreman/habits.jsonl` | The lessons ledger: up to three lessons per job from the retro step, each tied to a file in that job's folder. Only logged, never acted on by the crew | No |
 | `foreman/<job-id>` branch | The owner's commits | Yes, merged after the checker's PASS |
 | `PROJECT/CLAUDE.local.md`, `AGENTS.md` | OpenRig's instruction blocks for the seats | No (excluded or skip-worktree) |
 | `FOREMAN/rig.<project>.yaml` | Your filled-in crew | No (gitignored) |
