@@ -370,6 +370,71 @@ out="$("$QA" new "$T/furl.json" 2>&1)" && bad "refuses a writable folder over a 
 cp "$T/keep.json" "$QA_REPOS/fixture.json"
 SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
 
+echo "# review round 3"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"
+# The red copy of the repro check has the candidate's mode, not a leftover one from base.
+EXB="$(git -C "$R" rev-parse execbit)"
+git -C "$R" checkout -q -b unexec execbit; chmod -x "$R/tests/test_empty_middle.py"; echo "# touched" >> "$R/name.py"
+git -C "$R" add -A; git -C "$R" commit -qm unexec; git -C "$R" checkout -q main
+jq --arg b "$EXB" '.base = $b' "$(contract unexec)" > "$T/unexec.json"
+id="$(new "$T/unexec.json")"; for g in boot red; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+[ -f "$QA_HOME/runs/$id/src/base/tests/test_empty_middle.py" ] && [ ! -x "$QA_HOME/runs/$id/src/base/tests/test_empty_middle.py" ] && ok "the red copy of the check has the candidate's file mode" || bad "the red copy of the check has the candidate's file mode"
+"$QA" verdict "$id" >/dev/null 2>&1
+# A fix that turns a file into a folder holding a kept test: reversing must not delete the test.
+git -C "$R" checkout -q -b base3 "$BASE"; printf ' ' > "$R/sep"
+printf 'def full_name(first, middle, last):\n    s = open("sep").read()\n    return first + s + middle + s + last\n' > "$R/name.py"
+git -C "$R" add -A; git -C "$R" commit -qm base3; BASE3="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q -b filedir; git -C "$R" rm -q sep; mkdir "$R/sep"; printf ' ' > "$R/sep/value"; echo 'assert open("sep/value").read() == " "' > "$R/sep/test_sep.py"
+printf 'def full_name(first, middle, last):\n    s = open("sep/value").read()\n    return s.join(p for p in (first, middle, last) if p)\n' > "$R/name.py"
+printf '%s\n' "$repro" > "$R/tests/test_empty_middle.py"; git -C "$R" add -A; git -C "$R" commit -qm filedir; git -C "$R" checkout -q main
+jq '.test_paths = ["tests/", "sep/test_sep.py"] | .boot_cmd = "python3 -c \"import name\" && cp sep/test_sep.py \"$QA_EVIDENCE/kept-in-candidate\""' "$T/keep.json" > "$QA_REPOS/fixture.json"
+jq --arg b "$BASE3" '.base = $b' "$(contract filedir)" > "$T/filedir.json"
+id="$(new "$T/filedir.json")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "a reversal that would delete a kept test is a named failure, not a silent pass" "$(jq -r '.status + ": " + (.note | test("reverse") | tostring)' "$QA_HOME/runs/$id/gates/mutation.json" 2>/dev/null)" "fail: true"
+"$QA" verdict "$id" >/dev/null 2>&1
+# A changed file with & in its name reaches the mutation tool as one argument.
+branch amp
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+echo "x = 1" > 'a&b.py'; printf '%s\n' "$repro" > tests/test_empty_middle.py; commit amp
+jq '.mutation_cmd = "for f in {files}; do test -f \"$f\" || exit 1; done"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract amp)")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "a file name with & reaches the mutation tool intact" "$(jq -r .status "$QA_HOME/runs/$id/gates/mutation.json" 2>/dev/null)" "pass"
+"$QA" verdict "$id" >/dev/null 2>&1
+# qa try still reports when setup left a locked folder in the copy.
+jq '.setup_cmd = "mkdir -p gen && touch gen/f && chmod 555 gen"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; good_probe "$QA_HOME/runs/$id"
+out="$("$QA" try "$id" tests/probe/test_only_last.py 2>&1)"; [[ "$out" == *"exit 0"* ]] && ok "try reports its result even when the copy has a locked folder" || bad "try reports its result even when the copy has a locked folder" "$out"
+[ -z "$(ls "$QA_HOME/runs/$id/src" | grep '^try-')" ] && ok "try deletes its copy even when it has a locked folder" || bad "try deletes its copy even when it has a locked folder"
+chmod -R u+rwx "$QA_HOME/runs/$id/src" 2>/dev/null; "$QA" verdict "$id" >/dev/null 2>&1
+# An assertion in a log that also holds a zero byte still counts.
+branch nul
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+printf '%s\n' 'import sys; sys.path.insert(0, ".")' 'from name import full_name' 'sys.stdout.write("bin\0ary\n"); sys.stdout.flush()' 'assert full_name("Ada", "", "Lovelace") == "Ada Lovelace"' > tests/test_empty_middle.py; commit nul
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+id="$(new "$(contract nul)")"; for g in boot red; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "an assertion in a log with a zero byte still counts" "$(jq -r .status "$QA_HOME/runs/$id/gates/red.json" 2>/dev/null)" "pass"
+"$QA" verdict "$id" >/dev/null 2>&1
+for pair in "sandbox_ro|[\"$QA_HOME\"]" "sandbox_ro|[\"$QA_HOME/runs\"]" 'sandbox_ro|["/opt/a\n/etc"]'; do
+  k="${pair%%|*}"; v="${pair#*|}"
+  jq --arg k "$k" --argjson v "$v" '.[$k] = $v' "$T/keep.json" > "$QA_REPOS/fixture.json"
+  out="$("$QA" new "$(contract good)" 2>&1)" && bad "refuses $k $v" "$out" || ok "refuses $k $v"
+done
+jq --arg r "$R" '.sandbox_rw = [$r]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+jq --arg r "file://localhost$R" '.repo = $r' "$(contract good)" > "$T/furl.json"
+out="$("$QA" new "$T/furl.json" 2>&1)" && bad "refuses a writable folder over a file://localhost source repo" "$out" || ok "refuses a writable folder over a file://localhost source repo"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+id="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=filter.evil.smudge GIT_CONFIG_VALUE_0="touch $T/hostmark3; cat" "$QA" new "$(contract attrs)" 2>&1 | tail -1)"
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=filter.evil.smudge GIT_CONFIG_VALUE_0="touch $T/hostmark3; cat" "$QA" gate "$id" boot >/dev/null 2>&1
+[ ! -e "$T/hostmark3" ] && ok "git settings passed in the environment are not used either" || bad "git settings passed in the environment are not used either"
+"$QA" verdict "$id" >/dev/null 2>&1
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+
 echo "# contracts"
 c="$(contract good)"
 for pair in 'issue|"cf 9"' 'issue|"../x"' 'repro_check|"tests/x.py; rm -rf ~"' 'repro_check|"../outside.py"' 'candidate|"main; reboot"' 'reply_to|"nobody"' 'repo|"--upload-pack=x"' 'budget|{"wall_minutes":0,"tokens":1}'; do

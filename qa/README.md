@@ -200,8 +200,8 @@ Use `sandbox_rw` only for a cache kept for the QA rig alone, such as a pnpm stor
 
 - a folder that is, or holds, the home folder, `/run`, `/tmp`, `/proc`, `/dev` or `/sys`, or
   lies inside `/run`, `/proc`, `/dev` or `/sys`
-- a writable folder that overlaps the QA home, this repo's own folder, the repo settings or the
-  source repo
+- any folder that overlaps the QA home
+- a writable folder that overlaps this repo's own folder, the repo settings or the source repo
 - a path that ends in a space
 - any folder inside a writable one
 - a `sandbox_net` that is not `true` or `false`

@@ -41,7 +41,8 @@ need jq; need git
 # settings are left out, so a filter, diff driver or hook defined there is never run on the
 # candidate's files just because the candidate's .gitattributes names it.
 g() {
-  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+  env -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_EXTERNAL_DIFF \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null "$@"
 }
 
@@ -120,19 +121,22 @@ under() { [ "$1" = "$2" ] || [[ "$1/" == "${2%/}/"* ]]; }
 # script's own folder, the repo settings or the source repo; any folder inside a writable one
 # (candidate code could swap it for a link before the next gate).
 check_box() {
-  local rf="$1" repo="${2#file://}" k p c q home qa src ro=() rw=() keep=()
+  local rf="$1" repo="$2" k p c q home qa src ro=() rw=() keep=()
+  repo="${repo#file://localhost}"; repo="${repo#file://}"
   home="$(realpath -m "$HOME")"; qa="$(realpath -m "$QA_HOME")"; src=""
   [ ! -d "$repo" ] || src="$(realpath -m "$repo")"
   # What a writable folder may never overlap: gate results, this script, the repo settings, the source.
   keep=("$qa" "$(realpath -m "$ROOT")" "$(realpath -m "$QA_REPOS")"); [ -z "$src" ] || keep+=("$src")
   jq -e 'if has("sandbox_net") then .sandbox_net | type == "boolean" else true end' "$rf" >/dev/null || die "$rf: sandbox_net must be true or false, without quotes"
   for k in sandbox_ro sandbox_rw; do
-    jq -e --arg k "$k" '.[$k] // [] | type == "array" and all(.[]; type == "string")' "$rf" >/dev/null \
-      || die "$rf: $k must be a list of folder paths"
+    jq -e --arg k "$k" '.[$k] // [] | type == "array" and all(.[]; type == "string" and (contains("\n") | not))' "$rf" >/dev/null \
+      || die "$rf: $k must be a list of folder paths, each on one line"
     while IFS= read -r p; do
       [[ "$p" == /* && "/$p/" != */../* ]] || die "$rf: $k path must be absolute or start with ~/: $p"
       case "$p" in *[[:space:]]) die "$rf: $k path may not end in a space: '$p'" ;; esac
       c="$(realpath -m "$p")"
+      [[ "$c" != *$'\n'* ]] || die "$rf: $k path leads to a folder with a line break in its name: $p"
+      ! under "$qa" "$c" && ! under "$c" "$qa" || die "$rf: $k path $p overlaps the QA home; gate results and other runs live there"
       for q in "$home" /run /tmp /proc /dev /sys; do
         ! under "$q" "$c" || die "$rf: $k may not be, or hold, $q: $p"
       done
@@ -251,23 +255,35 @@ tree_setup() {
 # tree <run> <name> <rev> [gate]: a fresh worktree with setup run in it.
 tree() { tree_add "$1" "$2" "$3"; tree_setup "$1" "$2" "${4:-}"; }
 
-# Delete tree $2 of run $1. Plain delete: git is never run inside a tree after setup.
-tree_drop() { rm -rf "$1/src/$2"; g -C "$1/src/repo" worktree prune 2>/dev/null || true; }
+# Delete tree $2 of run $1. Plain delete: git is never run inside a tree after setup. Setup may
+# have locked folders, so unlock first (chmod -R does not follow links).
+tree_drop() {
+  chmod -R u+rwX "$1/src/$2" 2>/dev/null || true
+  rm -rf "$1/src/$2" 2>/dev/null || say "warning: could not delete $1/src/$2; it goes when the run's verdict is written"
+  g -C "$1/src/repo" worktree prune 2>/dev/null || true
+}
 
 # Run the repo's check command on one check file in tree $2. Exit: the check's.
 check() {
   local run="$1" dir="$2" file="$3" log="$4" cmd
   cmd="$(rget "$run/repo.json" check_cmd)"
-  run_cmd "$run" "$dir" "${cmd//\{check\}/$(printf '%q' "$file")}" "$log"
+  local q; q="$(printf '%q' "$file")"
+  run_cmd "$run" "$dir" "${cmd//\{check\}/"$q"}" "$log"
 }
 
 # Files the candidate changed that are not tests and not the repro check (the fix itself),
 # NUL-separated. A rename counts as one file removed and one added, so reversing restores both.
 fix_files() {
-  local run="$1" spec=() p
-  while read -r p; do [ -n "$p" ] && spec+=(":(exclude)$p"); done < <(jq -r '.test_paths[]? // empty' "$run/repo.json")
-  p="$(jq -r .repro_check "$run/contract.json")"; [ -z "$p" ] || spec+=(":(exclude)$p")
+  local run="$1" spec=()
+  mapfile -d '' -t spec < <(kept_spec "$run")
   g -C "$run/src/repo" diff -z --no-renames --name-only "$(cat "$run/base.sha")" HEAD -- . "${spec[@]}"
+}
+
+# Pathspecs that leave out what a fix reversal must keep: the tests and the repro check.
+kept_spec() {
+  local run="$1" p
+  while read -r p; do [ -z "$p" ] || printf ':(exclude)%s\0' "$p"; done < <(jq -r '.test_paths[]? // empty' "$run/repo.json")
+  p="$(jq -r .repro_check "$run/contract.json")"; [ -z "$p" ] || printf ':(exclude,literal)%s\0' "$p"
 }
 
 cmd_new() {
@@ -336,7 +352,7 @@ outcome() { if [ "$1" -eq 0 ]; then echo ok; elif [ "$(remaining "$2")" -le 0 ];
 red_ok() {
   local pat; pat="$(rget "$1/repo.json" assertion_pattern)"
   # grep -c reads the whole log; -q would stop at the first match and break the pipe on a long one.
-  [ -n "$pat" ] && [ "$(grep -v '^\$ ' "$2" | grep -Ec -- "$pat")" -gt 0 ]
+  [ -n "$pat" ] && [ "$(grep -av '^\$ ' "$2" | grep -aEc -- "$pat")" -gt 0 ]
 }
 
 # Path $2 inside tree $1 stays inside it once symlinks are followed (nothing written outside).
@@ -353,7 +369,8 @@ gate_boot() {
   case "$o" in ok) record "$run" boot pass "" "$e" ;; budget) record "$run" boot budget "timed out" "$e" ;; *) record "$run" boot fail "boot command failed" "$e" ;; esac
 }
 
-# The repro check is taken from the candidate commit itself, never from the candidate checkout:
+# The repro check is taken from the runner's own clone of the candidate commit, never from the
+# candidate checkout where gates run:
 # boot has run there, so a path in it may now lead anywhere. It is written into the base copy
 # before base's setup runs.
 gate_red() {
@@ -369,10 +386,13 @@ gate_red() {
   tree_add "$run" base "$(cat "$run/base.sha")"
   inside "$run/src/base" "$chk" && [ ! -L "$run/src/base/$chk" ] \
     || { record "$run" red fail "repro check path $chk leads outside the checkout (symlink)"; return; }
-  mkdir -p "$(dirname "$run/src/base/$chk")"
-  g -C "$run/src/repo" show "$(cat "$run/candidate.sha"):$chk" >"$run/src/base/$chk" 2>/dev/null \
+  # The runner's own clone is checked out at the candidate and nothing ever runs in it, so its
+  # copy of the check has the same bytes and mode as the one the green gate will run.
+  [ -f "$run/src/repo/$chk" ] && [ ! -L "$run/src/repo/$chk" ] && inside "$run/src/repo" "$chk" \
     || { record "$run" red fail "could not read repro check $chk from the candidate commit"; return; }
-  [ "$mode" != 100755 ] || chmod +x "$run/src/base/$chk"
+  mkdir -p "$(dirname "$run/src/base/$chk")"; rm -f "$run/src/base/$chk"
+  cp -p "$run/src/repo/$chk" "$run/src/base/$chk" \
+    || { record "$run" red fail "could not copy repro check $chk into the base copy"; return; }
   tree_setup "$run" base red || return 0
   check "$run" "$run/src/base" "$chk" "$run/logs/red.log" || e=$?
   o="$(outcome "$e" "$run")"
@@ -404,7 +424,12 @@ gate_mutation() {
   if [ -n "$chk" ] && [ "${#files[@]}" -gt 0 ]; then
     # Reverse the fix first, then run setup: after setup the copy may hold its own git config.
     tree_add "$run" mutant "$(cat "$run/candidate.sha")"
-    g -C "$run/src/repo" --literal-pathspecs diff --binary --no-renames --no-ext-diff --no-textconv "$(cat "$run/base.sha")" HEAD -- "${files[@]}" \
+    # Same exclusions as the file list: a changed path that is now a folder also matches the
+    # tests inside it, and those must stay.
+    local only=() kept=()
+    for o in "${files[@]}"; do only+=(":(literal)$o"); done
+    mapfile -d '' -t kept < <(kept_spec "$run")
+    g -C "$run/src/repo" diff --binary --no-renames --no-ext-diff --no-textconv "$(cat "$run/base.sha")" HEAD -- "${only[@]}" "${kept[@]}" \
       | g -C "$run/src/mutant" apply -R --whitespace=nowarn 2>>"$run/logs/mutation.log" \
       || { record "$run" mutation fail "could not reverse the fix to re-apply the bug" ; return; }
     tree_setup "$run" mutant mutation || return 0
@@ -423,7 +448,8 @@ gate_mutation() {
   cmd="$(rget "$run/repo.json" mutation_cmd)"
   if [ -n "$cmd" ] && [ "${#files[@]}" -gt 0 ]; then
     for o in "${files[@]}"; do q+=("$(printf '%q' "$o")"); done
-    e=0; run_cmd "$run" "$run/src/candidate" "${cmd//\{files\}/${q[*]}}" "$run/logs/mutation.log" || e=$?
+    # The replacement is quoted so that bash does not read & in a file name as "the match".
+    o="${q[*]}"; e=0; run_cmd "$run" "$run/src/candidate" "${cmd//\{files\}/"$o"}" "$run/logs/mutation.log" || e=$?
     o="$(outcome "$e" "$run")"
     case "$o" in
       bad) record "$run" mutation fail "mutation tool: too many surviving mutants" "$e"; return ;;
@@ -508,9 +534,9 @@ cmd_try() {
   tree_setup "$run" "$t" || { tree_drop "$run" "$t"; die "setup failed in the try copy (logs/setup-$t.log)"; }
   : >"$run/logs/try.log"
   check "$run" "$run/src/$t" "$f" "$run/logs/try.log" || e=$?
-  tree_drop "$run" "$t"
   cat "$run/logs/try.log"
   say "exit $e"
+  tree_drop "$run" "$t"
 }
 
 # --- the verdict ----------------------------------------------------------------------------
