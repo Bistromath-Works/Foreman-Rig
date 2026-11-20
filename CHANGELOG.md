@@ -9,7 +9,10 @@
   operator's keys. New repo settings `sandbox_ro` and `sandbox_rw` name the tool and cache
   folders a repo needs. **Upgrade:** install `bwrap`, add each repo's tool folders to
   `sandbox_ro`, and have `teardown_cmd` write to `$QA_EVIDENCE`, not `$QA_RUN`. The seats
-  themselves still run as your user; see "The sandbox" in `qa/README.md`.
+  themselves still run as your user; see "The sandbox" in `qa/README.md`. The script's own
+  unsandboxed steps (reading the repro check, reversing the fix, copying probe checks) now
+  happen before any candidate code has run in a checkout, and unsafe sandbox settings are
+  refused when a run starts.
 
 - **Optional coder seat (CF-12).** `scripts/foreman init <project> --coder` adds a fourth seat
   for a smaller, cheaper model, usually a local one. The owner hands it small, fully specified

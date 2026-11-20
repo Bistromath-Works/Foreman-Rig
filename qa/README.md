@@ -148,9 +148,10 @@ sandbox, and so does all candidate code, since those commands are what run it. I
 | Environment variables | Cleared, except `PATH`, `HOME`, `USER`, `LANG`, `QA_RUN`, `QA_EVIDENCE` |
 | Processes | Its own list; anything a command leaves running is stopped when the command ends |
 
-So candidate code cannot write a gate result or the verdict, cannot write to or push to the
-source repo, and cannot read your keys, tokens or other projects. `tests/qa.sh` has a candidate
-that tries each of these and checks that every one is blocked.
+So candidate code cannot write a gate result or the verdict, and cannot write to or push to the
+source repo. Of your own files it sees only the folders you name in `sandbox_ro` and
+`sandbox_rw`, so name tool folders, never a folder that holds keys or tokens. `tests/qa.sh` has
+candidates that try each of these and checks that every one is blocked.
 
 `scripts/qa new` refuses to start a run if `bwrap` is missing or cannot start a sandbox. There
 is no switch to run without it.
@@ -158,8 +159,26 @@ is no switch to run without it.
 Because the home folder is hidden, name the tools a repo needs in `sandbox_ro`, for example
 `["~/.nvm", "~/.local/bin"]`. A missing tool shows up as "command not found" in the setup log.
 Use `sandbox_rw` only for a cache kept for the QA rig alone, such as a pnpm store at
-`~/.cache/foreman-qa/pnpm-store`, never for a folder your own work uses. `scripts/qa` refuses a
-`sandbox_rw` of `/`, the home folder, or anything holding or inside the QA home.
+`~/.cache/foreman-qa/pnpm-store`, never for a folder your own work uses.
+
+`scripts/qa new` refuses sandbox settings that would open a hole:
+
+- a folder that is, or holds, the home folder, `/run` or `/tmp`, or lies inside `/run`
+- a writable folder that overlaps the QA home or the source repo
+- any folder inside a writable one
+- a `sandbox_net` that is not `true` or `false`
+
+The folders are resolved once, when the run starts. If one has become a link to somewhere else
+by the time a later gate runs, that gate's command is refused.
+
+Outside the sandbox, the script itself only touches a checkout before any candidate code has
+run in it. The repro check is read from the candidate commit, the fix is reversed for the
+mutation gate, and probe checks are copied in, all before the repo's setup command runs. After
+setup a checkout may hold anything, and only sandboxed commands run in it.
+
+Inside the sandbox a checkout's files are writable but its git index is not, so a command that
+runs `git add` or `git commit` in the checkout fails. Tests that need git should make their own
+repo in a temp folder.
 
 What the sandbox does not cover:
 

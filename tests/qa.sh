@@ -6,7 +6,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QA="$ROOT/scripts/qa"
-T="$(mktemp -d)" && [ -d "$T" ] || { echo "cannot make a temp folder" >&2; exit 1; }
+# Under /var/tmp, not /tmp: the sandbox hides /tmp, and the source repo and fake home folder
+# here must be visible to it, so a blocked write is blocked by the sandbox's own rules.
+T="$(mktemp -d -p /var/tmp)" && [ -d "$T" ] || { echo "cannot make a temp folder" >&2; exit 1; }
 trap 'rm -rf "$T"' EXIT
 export QA_HOME="$T/home" QA_REPOS="$T/repos"
 mkdir -p "$QA_HOME" "$QA_REPOS"
@@ -190,6 +192,7 @@ _out = [
     _try("write outside the checkout", lambda: open("@OUT@/pwned", "w").write("x")),
 ]
 open(os.environ["QA_EVIDENCE"] + "/cheat.txt", "w").write("\n".join(_out) + "\n")
+open(os.environ["QA_EVIDENCE"] + "/seen.txt", "w").write(_try("see the source repo", lambda: open(_src + "/name.py").read()) + "\n")
 PY
 printf '%s\n' "$repro" > tests/test_empty_middle.py; commit cheat
 SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
@@ -205,6 +208,7 @@ if [ -f "$run/evidence/cheat.txt" ]; then
   done < "$run/evidence/cheat.txt"
   same "every cheat was tried" "$(wc -l < "$run/evidence/cheat.txt" | tr -d ' ')" "9"
 else bad "cheat candidate ran and reported"; fi
+same "the source repo is visible, so its write was blocked by the read-only rule" "$(cat "$run/evidence/seen.txt" 2>/dev/null)" "see the source repo: DONE"
 [ ! -e "$run/gates/audit.json" ] && [ ! -e "$run/verdict.json" ] && [ ! -e "$run/audit.md" ] && ok "no forged result files in the run" || bad "no forged result files in the run"
 [ ! -e "$R/pwned" ] && ! git -C "$R" rev-parse -q --verify refs/heads/pwned >/dev/null && [ ! -e "$ROOT/pwned" ] && ok "source repo and the folders outside got nothing" || bad "source repo and the folders outside got nothing"
 rm -f "$R/pwned" "$ROOT/pwned"; git -C "$R" update-ref -d refs/heads/pwned 2>/dev/null
@@ -212,7 +216,7 @@ HOME="$T/fakehome" QA_TEST_SECRET=hunter2 full_run "$id" good 'coverage: covered
 # full_run re-ran boot (refused: already ran) and went on; the honest gates still decide.
 same "the cheating candidate still gets an honest verdict" "$(jq -r '.verdict + " " + (.gate // "-")' "$run/verdict.json")" "pass -"
 cp "$T/keep.json" "$QA_REPOS/fixture.json"
-for v in '["/"]' "[\"$QA_HOME/runs\"]" "[\"$T\"]" '["relative/path"]' '"not-a-list"'; do
+for v in '["/"]' "[\"$QA_HOME/runs\"]" "[\"$T\"]" '["relative/path"]' '"not-a-list"' "[\"$R\"]" "[\"$R/tests\"]" '["/run/user"]' "[\"$HOME\"]"; do
   jq --argjson v "$v" '.sandbox_rw = $v' "$T/keep.json" > "$QA_REPOS/fixture.json"
   out="$("$QA" new "$(contract good)" 2>&1)" && bad "refuses sandbox_rw $v" "$out" || ok "refuses sandbox_rw $v"
 done
@@ -226,6 +230,61 @@ jq --arg c "${net_cmd//\$PORT/$PORT}" '.boot_cmd = $c | .sandbox_net = false' "$
 id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1
 same "sandbox_net false cuts the network off" "$(jq -r .status "$QA_HOME/runs/$id/gates/boot.json")" "fail"
 kill "$LPID" 2>/dev/null
+mkdir -p "$T/cache/tools"
+for pair in "sandbox_ro|[\"/\"]" "sandbox_ro|[\"/run\"]" "sandbox_ro|[\"$HOME\"]" "sandbox_ro|[\"$T/cache/tools\"]" 'sandbox_net|"false"'; do
+  k="${pair%%|*}"; v="${pair#*|}"
+  jq --arg k "$k" --argjson v "$v" --arg c "$T/cache" '.sandbox_rw = [$c] | .[$k] = $v' "$T/keep.json" > "$QA_REPOS/fixture.json"
+  out="$("$QA" new "$(contract good)" 2>&1)" && bad "refuses $k $v" "$out" || ok "refuses $k $v"
+done
+# A sandbox folder that is swapped for a link after the run started is not mounted.
+mkdir -p "$T/tools"
+jq --arg a "$T/tools" '.sandbox_ro = [$a]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; rmdir "$T/tools"; ln -s "$T/fakehome" "$T/tools"
+"$QA" gate "$id" boot >/dev/null 2>&1
+same "a sandbox folder swapped for a link after the run started stops the run" "$(jq -r .status "$QA_HOME/runs/$id/gates/boot.json")" "fail"
+rm -f "$T/tools"
+# The sandbox cannot cut its own log short.
+jq '.boot_cmd = "python3 -c \"import os\ntry: os.ftruncate(1, 0)\nexcept OSError: pass\""' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1
+head -c 2 "$QA_HOME/runs/$id/logs/boot.log" | grep -q '^\$ ' && ok "a command cannot cut its own log short" || bad "a command cannot cut its own log short"
+
+echo "# hostile files left for the steps that run outside the sandbox"
+jq '.setup_cmd = "python3 -c \"import name\""' "$T/keep.json" > "$QA_REPOS/fixture.json"
+mkdir -p "$T/planted"; echo 'raise SystemExit("LEAK-hunter2")' > "$T/planted/test_empty_middle.py"
+# sneak-red: after boot, the candidate's tests folder is a link to a folder outside the checkout.
+branch sneak-red
+sed "s|@PLANTED@|$T/planted|" > name.py <<'PY'
+import os
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+if os.path.basename(os.getcwd()) == "candidate" and not os.path.islink("tests"):
+    os.rename("tests", "tests.real"); os.symlink("@PLANTED@", "tests")
+PY
+printf '%s\n' "$repro" > tests/test_empty_middle.py; commit sneak-red
+id="$(new "$(contract sneak-red)")"; run="$QA_HOME/runs/$id"
+for g in boot red; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "red gate takes the repro check from the commit, not from a planted link" "$(jq -r .status "$run/gates/red.json" 2>/dev/null)" "pass"
+! grep -q LEAK-hunter2 "$run/logs/red.log" 2>/dev/null && ok "a file outside the checkout is not copied into a gate" || bad "a file outside the checkout is not copied into a gate"
+"$QA" verdict "$id" >/dev/null 2>&1
+# sneak-mut: setup in the mutation copy swaps in its own git folder whose config runs a command.
+branch sneak-mut
+sed "s|@MARK@|$T/hostmark|" > name.py <<'PY'
+import os, subprocess
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+if os.path.basename(os.getcwd()) == "mutant" and os.path.isfile(".git"):
+    os.remove(".git")
+    subprocess.run(["git", "init", "-q", "."], check=False, capture_output=True)
+    subprocess.run(["git", "config", "filter.x.clean", "touch @MARK@; cat"], check=False, capture_output=True)
+    open(".gitattributes", "w").write("* filter=x\n")
+PY
+printf '%s\n' "$repro" > tests/test_empty_middle.py; commit sneak-mut
+id="$(new "$(contract sneak-mut)")"; run="$QA_HOME/runs/$id"
+for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+[ ! -e "$T/hostmark" ] && ok "git config planted during setup is not run outside the sandbox" || bad "git config planted during setup is not run outside the sandbox"
+same "mutation gate still decides on the planted-config candidate" "$(jq -r .status "$run/gates/mutation.json" 2>/dev/null)" "pass"
+"$QA" verdict "$id" >/dev/null 2>&1
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
 cp "$T/keep.json" "$QA_REPOS/fixture.json"
 mkdir -p "$T/nobwrap"; for b in bash jq git date cat mkdir cp timeout dirname basename tr sed find sort head tail grep rm touch realpath env ls wc; do ln -s "$(command -v $b)" "$T/nobwrap/$b" 2>/dev/null; done
 out="$(PATH="$T/nobwrap" "$QA" new "$(contract good)" 2>&1)"; [[ "$out" == *"bwrap"* ]] && ok "no sandbox tool -> the run is refused, not run unprotected" || bad "no sandbox tool -> the run is refused, not run unprotected" "$out"
