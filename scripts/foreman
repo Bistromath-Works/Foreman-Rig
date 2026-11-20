@@ -259,12 +259,28 @@ cmd_up() {
   seed_pi_models
   install_bans 0
   say "Launching $RIG_NAME in $PROJECT ..."
-  rig up "$RIG_FILE" --cwd "$PROJECT"
+  # OpenRig exits non-zero when any seat needs a person before it can start (a Codex seat
+  # asking to trust a new hook, for one). The other seats are up by then, so the watcher is
+  # started either way, and the steps for the waiting seat are spelled out.
+  local out rc=0 seat
+  out="$(rig up "$RIG_FILE" --cwd "$PROJECT" 2>&1)" || rc=$?
+  [ -z "$out" ] || printf '%s\n' "$out"
   say ""
-  say "The crew is starting. Watch it with: rig tui   (or: rig ps)"
+  if [ "$rc" -eq 0 ]; then say "The crew is starting. Watch it with: rig tui   (or: rig ps)"
+  else say "The crew started, but OpenRig reported a problem (see above). Check: rig ps --nodes --rig $RIG_NAME"; fi
   say "Talk to the owner with: tmux attach -t crew-owner@$RIG_NAME   (Ctrl-b d to leave)"
   say "If a seat asks whether to start fresh, answer y (Enter alone means No)."
   start_unstick
+  while IFS= read -r seat; do
+    [ -n "$seat" ] || continue
+    say ""
+    say "Seat $seat is waiting for you to trust a hook. It is Foreman's command guard, which makes"
+    say "the seat refuse banned commands. Until you answer, that seat does nothing:"
+    say "  1. tmux attach -t '$seat'"
+    say "  2. choose \"Trust all and continue\" (or review it first), then leave with Ctrl-b d"
+    say "  3. rig seat continue '$seat'"
+  done < <(printf '%s\n' "$out" | sed -n 's/.*(\([A-Za-z0-9._-]*@[A-Za-z0-9._-]*\)).*hook trust.*/\1/p' | sort -u)
+  return "$rc"
 }
 
 cmd_down() {

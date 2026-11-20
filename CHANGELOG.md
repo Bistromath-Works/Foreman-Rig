@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A seat that needs a person no longer stops the launch half way (CF-21).** When OpenRig
+  reports a seat waiting at start, `scripts/foreman up` still starts the unstick watcher. For a
+  Codex seat waiting to trust a hook it prints the three steps to take.
+
 - **The audit and the rulebook cap (CF-13).** `rulebook.json` lists the instruction files the
   seats are given and caps their total size; `scripts/clu rulebook` fails when it is over.
   `scripts/clu audit <project>` has a model outside both rigs read the lessons ledger and
