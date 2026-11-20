@@ -44,8 +44,11 @@ def esc: gsub("(?<c>[\\\\^$.|?*+()\\[\\]{}])"; "\\\\\(.c)");
 | ($raw | gsub("(?<g>(^|[^A-Za-z0-9_])git)(?<o>( (-C|-c|--git-dir|--work-tree|--namespace|--exec-path) [^ ]+| --(git-dir|work-tree|namespace|exec-path)=[^ ]+| (--no-pager|--paginate|-p|-P|--bare|--no-replace-objects|--literal-pathspecs|--no-optional-locks))+)"; "\(.g)")) as $plain
 # For the background check only: quoted text is blanked, so "&" inside a string is not an
 # operator. A shell handed its script with -c keeps the script, quotes and all.
+# The text of a here-document (<<EOF ... EOF) is a file being written, not commands, so it is
+# cut out too: "type A = B & C" in a draft is not a background process.
+| ($cmd | gsub("<<-?[ \\t]*['\"]?(?<w>[A-Za-z_][A-Za-z0-9_]*)['\"]?[^\\n]*\\n[\\s\\S]*?\\n[ \\t]*\\k<w>(?=\\n|$)"; "<<HEREDOC") | gsub("\\s+"; " ")) as $nodoc
 | (if ($raw | test("(^|[^A-Za-z0-9_])(bash|sh|zsh|dash) (-[a-z]+ )*-[a-z]*c( |$)")) then $raw
-   else ($raw | gsub("'[^']*'"; "''") | gsub("\"(\\\\.|[^\"\\\\])*\""; "\"\"")) end) as $bare
+   else ($nodoc | gsub("'[^']*'"; "''") | gsub("\"(\\\\.|[^\"\\\\])*\""; "\"\"")) end) as $bare
 | def has($c; $t): $c | test("(^|[^A-Za-z0-9_])" + ($t | esc) + "($|[\\s;|&<>)\"'`=])");
 # The words of the one command that holds the banned text: the piece between ; | & and newlines.
 def words($t): [$plain | splits("[;|&\\n]+") | select(has(.; $t))] | (.[0] // "") | [splits(" +")] ;

@@ -172,8 +172,9 @@ words as a whole argument: `"pnpm install (without --frozen-lockfile --offline)"
 
 A ban matches whole words anywhere in the command, so `vercel` stops `npx vercel deploy` and
 `bash -c 'vercel'` but not `cat vercel.json`. Git's own options before the subcommand are
-looked through, so `git -C app push` is still a push. An `&` inside quotes is text, not a
-background process. It also stops `git commit -m "remove vercel"`:
+looked through, so `git -C app push` is still a push. An `&` inside quotes or inside a
+here-document (`<<EOF ... EOF`) is text, not a background process. A banned command inside a
+here-document is still refused, since a here-document can be fed to a shell. It also stops `git commit -m "remove vercel"`:
 put such a message in a file. The guard stops a seat that forgets or misreads a rule. It does
 not stop one that hides the command in a script. If the ban list cannot be read, the guard
 refuses every shell command, so a broken setup is loud.
