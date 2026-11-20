@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Foreman's command guard. A seat's runtime calls this before it runs a shell command; a banned
+# command is refused before it starts, whatever the seat's prompt says.
+#
+#   foreman-guard <bans.json>              hook mode: the tool call arrives as JSON on stdin
+#   foreman-guard <bans.json> --command    the command itself arrives on stdin (used by Pi)
+#
+# Exit 0: allowed. Exit 2: refused, with the reason on stderr (Claude Code and Codex both read
+# exit 2 from a PreToolUse hook as "block, and show the model the reason").
+#
+# The ban list is written by `scripts/foreman bans <project>` from the project's banned_cmds and
+# Foreman's built-in bans. A ban matches when its text appears in the command as whole words
+# ("vercel" matches `npx vercel deploy`, not `cat vercel.json`). If the list cannot be read,
+# every shell command is refused: a guard that fails open is no guard.
+#
+# This stops a seat that forgets or misreads a rule. It does not stop one that sets out to get
+# round it (a script, a renamed binary). What makes push impossible is the lack of credentials.
+set -uo pipefail
+
+bans="${1:-}"; mode="${2:-}"
+refuse() { printf 'Blocked by Foreman: %s\n' "$*" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || refuse "the guard needs jq and cannot find it, so no shell command can run. Tell the human."
+[ -r "$bans" ] && jq -e '.bans | type == "array"' "$bans" >/dev/null 2>&1 \
+  || refuse "the ban list ($bans) is missing or unreadable, so no shell command can run. Tell the human; they run: scripts/foreman bans <project>"
+
+input="$(cat)"
+if [ "$mode" = --command ]; then
+  cmd="$input"; bg=false
+else
+  # Only shell tools carry a command. Anything else (file reads, edits) is not this guard's job.
+  cmd="$(jq -r 'if (.tool_input | type) == "object" then (.tool_input.command // empty | if type == "array" then join(" ") else tostring end) else empty end' <<<"$input" 2>/dev/null)" \
+    || refuse "could not read the tool call, so the command was not run. Tell the human."
+  bg="$(jq -r '.tool_input.run_in_background // false' <<<"$input" 2>/dev/null || echo false)"
+  [ -n "$cmd" ] || exit 0
+fi
+
+# The matching rules, in jq. A ban's text must appear as whole words: not glued to a letter,
+# digit or _ before it, and followed by the end, a space, or a shell separator.
+read -r -d '' MATCH <<'JQ' || true
+def esc: gsub("(?<c>[\\\\^$.|?*+()\\[\\]{}])"; "\\\\\(.c)");
+($cmd | gsub("\\s+"; " ")) as $c
+| def has($t): $c | test("(^|[^A-Za-z0-9_])" + ($t | esc) + "($|[\\s;|&)\"'`=])");
+first(
+  ($b[0].bans[] | select(has(.text))
+    | select((.unless // []) as $u | ($u | length) == 0 or ($u | all(. as $w | $c | contains($w)) | not))
+    | "`\(.text)`\(if (.unless // []) | length > 0 then " without " + (.unless | join(" ")) else "" end) is banned (\(.source))"),
+  (select($b[0].background != false)
+    | select($bg == "true" or ($c | test("(^|[^A-Za-z0-9_])(nohup|setsid|disown)($|\\s)")) or ($c | test("(^|[^&>])&(\\s*$|\\s+[^&\\s]|\\s*[;)])")))
+    | "background processes are banned (built-in)")
+) // empty
+JQ
+hit="$(jq -rn --arg cmd "$cmd" --arg bg "$bg" --slurpfile b "$bans" "$MATCH" 2>/dev/null)" \
+  || refuse "the guard could not check this command, so it was not run. Tell the human."
+[ -z "$hit" ] || refuse "$hit. Do not look for another way to run it. If the job needs it, stop and tell the owner, who tells the human."
+exit 0

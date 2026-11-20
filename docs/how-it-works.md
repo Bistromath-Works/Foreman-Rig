@@ -125,6 +125,30 @@ it. Design, schemas, money, security and anything the task cannot spell out stay
 | `FOREMAN/rig.<project>.yaml` | Your filled-in crew | No (gitignored) |
 | `PROJECT/.claude/settings.local.json`, `PROJECT/.codex/langfuse.json` | Langfuse keys, if tracing is on (see [observability.md](observability.md)) | No (excluded; the script refuses otherwise) |
 
+## Banned commands
+
+`scripts/foreman up` (or `scripts/foreman bans <project>` by itself) writes the project's
+`banned_cmds` and Foreman's built-in bans to `.foreman/bans.json`, and makes each seat's runtime
+run `scripts/foreman-guard` before every shell command. A banned command is refused before it
+starts, and the seat is told why.
+
+| Runtime | How it is hooked | What you do |
+| --- | --- | --- |
+| claude-code | A PreToolUse hook in the project's `.claude/settings.local.json` | Nothing |
+| pi | An extension in the seat's own agent folder | Nothing |
+| codex | A PreToolUse hook in the project's `.codex/hooks.json` | Once per codex seat: open it, type `/hooks`, trust the Foreman guard. Until then codex ignores the hook |
+
+Built in: `git push`, `git remote add/set-url/remove/rename`, `gh`, and background processes
+(`&`, `nohup`, a tool call started in the background). A `banned_cmds` entry is plain text, or
+`"text (without word word)"`, which is banned unless the command has every one of those words:
+`"pnpm install (without --frozen-lockfile --offline)"`.
+
+A ban matches whole words anywhere in the command, so `vercel` stops `npx vercel deploy` and
+`bash -c 'vercel'` but not `cat vercel.json`. It also stops `git commit -m "remove vercel"`:
+put such a message in a file. The guard stops a seat that forgets or misreads a rule. It does
+not stop one that hides the command in a script. If the ban list cannot be read, the guard
+refuses every shell command, so a broken setup is loud.
+
 ## Safety rails
 
 Written in [CULTURE.md](../CULTURE.md), which every seat receives: no pushes or remotes, no

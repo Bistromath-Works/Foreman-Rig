@@ -47,8 +47,9 @@ you: "build X"  →  owner reads the area, lists what to remove, plans
 - **Nothing merges without the checker's PASS.** HIGH and MED findings block; LOW is advice.
 - **Outside facts carry their source.** A rate or fee the code uses gets a comment naming where
   it came from and a test that pins it. No source: the owner asks you.
-- **Nothing is pushed or deployed without you.** The job ends with a local merge. The owner
-  pushes only when you say so, and only after any database migration the change needs is live.
+- **Nothing is pushed or deployed without you.** The job ends with a local merge. No seat
+  pushes: each seat's runtime refuses it. You push, after any database migration the change
+  needs is live.
 - **Everything is written down** in `.foreman/jobs/<job-id>/`: the spec, every brief, every
   verdict, every decision, and a `RESUME.md` a fresh session can pick the job up from.
 - **You answer once.** `.foreman/STATE.md` is the crew's memory across jobs and sessions: what is
@@ -129,8 +130,11 @@ a contract file and get a verdict back. See [qa/README.md](qa/README.md).
 
 ## Security, briefly
 
-- **The rules are instructions, not a sandbox.** The crew is told never to push, deploy or touch
-  anything outside the repo, and `project.yaml` lets you ban more. Models can still break rules.
+- **Banned commands are refused, but this is not a sandbox.** `scripts/foreman up` makes each
+  seat's runtime ask a guard before every shell command: push, remote changes, `gh`,
+  background processes and everything on `banned_cmds` are refused before they run (see
+  "Banned commands" in docs/how-it-works.md). That stops a seat that forgets a rule, not one
+  that sets out to get round it. The other rules are instructions, and models can break them.
   Run Foreman where a broken rule is an annoyance, not a disaster: a machine and a checkout
   without production credentials.
 - **Keys never go in this repo or your project's git.** Model keys reach seats through the
