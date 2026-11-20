@@ -22,7 +22,8 @@
   refused when a run starts. The script's own git calls ignore the operator's git settings.
   Also fixed: an assertion early in a very long log was missed, an executable repro check
   lost its executable bit, a fix that renames a file could not be reversed, and a checkout
-  the candidate had locked was never deleted.
+  the candidate had locked was never deleted. The red gate now runs the same bytes and file
+  mode as the green gate, and reversing a fix never removes a test that is meant to stay.
 
 - **Optional coder seat (CF-12).** `scripts/foreman init <project> --coder` adds a fourth seat
   for a smaller, cheaper model, usually a local one. The owner hands it small, fully specified
