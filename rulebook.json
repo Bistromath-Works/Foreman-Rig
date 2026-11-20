@@ -1,0 +1,15 @@
+{
+  "about": "The rulebook: every instruction file a seat is given. A rule change replaces or merges with an old rule; the rulebook as a whole may not grow past max_lines. Raise max_lines only by a decision of the human, recorded in the Decisions log.",
+  "max_lines": 508,
+  "files": [
+    "CULTURE.md",
+    "qa/CULTURE.md",
+    "agents/owner/guidance/role.md",
+    "agents/checker/guidance/role.md",
+    "agents/coder/guidance/role.md",
+    "agents/auditor/guidance/role.md",
+    "agents/qa-gatekeeper/guidance/role.md",
+    "agents/qa-prober/guidance/role.md",
+    "agents/qa-test-auditor/guidance/role.md"
+  ]
+}

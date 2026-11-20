@@ -10,3 +10,5 @@ jobs:
           node-version: 22
       - run: bash tests/run.sh
       - run: bash tests/qa.sh
+      - run: bash tests/golden.sh
+      - run: bash tests/clu.sh

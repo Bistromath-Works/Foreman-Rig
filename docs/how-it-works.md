@@ -125,6 +125,32 @@ it. Design, schemas, money, security and anything the task cannot spell out stay
 | `FOREMAN/rig.<project>.yaml` | Your filled-in crew | No (gitignored) |
 | `PROJECT/.claude/settings.local.json`, `PROJECT/.codex/langfuse.json` | Langfuse keys, if tracing is on (see [observability.md](observability.md)) | No (excluded; the script refuses otherwise) |
 
+## Lessons, the rulebook and the audit
+
+After every job the retro step logs up to three lessons to the project's
+`.foreman/habits.jsonl` (see the owner's role, step 8b). Nothing changes because of a lesson.
+
+The **rulebook** is the set of instruction files a seat is given, listed in `rulebook.json`
+with a size cap in lines. `scripts/clu rulebook` prints the files and fails when the total is
+over the cap, and the tests run it, so a rule can only be added by replacing or merging an old
+one. Raising the cap is a decision for the human.
+
+`scripts/clu audit <project> [--model <id>]` sends the lessons (one sentence each, no code) and
+the rulebook's text to a model outside both rigs, and writes at most one proposal to
+`clu/proposals/`, with a patch. It never changes a rule. Code checks the model's answer:
+
+| Check | Why |
+| --- | --- |
+| The habit is in three or more different jobs, all in the ledger | One bad job is not a habit |
+| The text to replace occurs exactly once in one rulebook file | The patch must apply cleanly and mean one thing |
+| The new text has no more lines than the old | The rulebook does not grow |
+| Neither the ledger nor the new text holds anything that looks like a key | Nothing secret leaves, nothing secret comes back |
+
+A habit a program could catch is listed as "better as a check in code" and gets no rule.
+A proposal that fails a check is kept, marked rejected with the reason, so two models can be
+compared on the same ledger: run the audit once per model. Taking a proposal means applying
+its patch on a branch and opening a pull request for the human.
+
 ## Banned commands
 
 `scripts/foreman up` (or `scripts/foreman bans <project>` by itself) writes the project's

@@ -1,0 +1,9 @@
+{"at":"2026-11-01T10:00:00Z","job":"fmn-20261101-0900","about":"owner","lesson":"The owner's check brief listed promises but did not say what had not been tested.","evidence":"ctx/check-r1.task.md","by":"sample"}
+{"at":"2026-11-01T10:00:00Z","job":"fmn-20261101-0900","about":"coder","lesson":"The coder left a debug print statement in the file it handed back.","evidence":"out/code-1.md","by":"sample"}
+{"at":"2026-11-03T10:00:00Z","job":"fmn-20261103-1400","about":"owner","lesson":"The brief to the checker gave no list of untested areas, so the checker spent a round finding them.","evidence":"ctx/check-r1.task.md","by":"sample"}
+{"at":"2026-11-03T10:00:00Z","job":"fmn-20261103-1400","about":"checker","lesson":"The checker ran the verify command before reading any code, which caught a red build early.","evidence":"out/check-r1.md","by":"sample"}
+{"at":"2026-11-05T10:00:00Z","job":"fmn-20261105-1100","about":"coder","lesson":"A leftover debug print from the coder reached the owner's diff review.","evidence":"out/code-2.md","by":"sample"}
+{"at":"2026-11-05T10:00:00Z","job":"fmn-20261105-1100","about":"owner","lesson":"The owner wrote the spec from a description in two lines and started without asking, as the role says.","evidence":"ctx/SPEC.md","by":"sample"}
+{"at":"2026-11-08T10:00:00Z","job":"fmn-20261108-1530","about":"owner","lesson":"What was not tested was missing from the owner's check brief again; the checker blocked on an untested path.","evidence":"ctx/check-r1.task.md","by":"sample"}
+{"at":"2026-11-08T10:00:00Z","job":"fmn-20261108-1530","about":"coder","lesson":"The coder's result again included a debug print the task did not ask for.","evidence":"out/code-1.md","by":"sample"}
+{"at":"2026-11-10T10:00:00Z","job":"fmn-20261110-0930","about":"auditor","lesson":"The auditor's report compared STATE.md with the code and found one stale line.","evidence":"out/audit.md","by":"sample"}

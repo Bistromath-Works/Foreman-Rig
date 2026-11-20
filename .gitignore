@@ -4,3 +4,5 @@ rig.*.yaml
 *.tmp
 # Each operator's QA settings per repo stay local.
 qa/repos/
+# CLU audit proposals are working files; a taken proposal becomes a pull request.
+clu/proposals/

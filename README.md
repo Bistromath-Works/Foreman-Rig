@@ -123,6 +123,8 @@ a contract file and get a verdict back. See [qa/README.md](qa/README.md).
 - `bash tests/run.sh` tests the setup script against stub commands: seconds, no models, no keys.
   CI runs it on every push.
 - `bash tests/qa.sh` tests the QA rig's gates and verdicts on a fixture repo with a planted bug.
+- `bash tests/golden.sh` plays the golden tasks and checks the score is the known baseline.
+- `bash tests/clu.sh` tests the audit's checks and the rulebook's size cap.
   CI runs it too.
 - `examples/smoke/` is a tiny project with a spec and failing acceptance tests. Point a new
   crew at it to prove the whole flow works with your models before you trust it with your
@@ -163,6 +165,8 @@ qa/                     the QA rig: a separate rig that tries to break a candida
 agents/qa-*/            the QA rig's seats: gatekeeper, prober, test auditor
 scripts/qa              the QA rig's gates and verdict, in code
 tests/qa.sh             tests for scripts/qa (CI runs them)
+tests/golden.sh         the golden tasks' baseline (CI runs it)
+tests/clu.sh            tests for scripts/clu and the rulebook cap (CI runs them)
 CHANGELOG.md            what changed
 ```
 
