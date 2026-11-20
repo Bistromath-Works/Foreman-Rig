@@ -11,5 +11,6 @@
     "SET-ME"
   ],
   "sandbox_ro": [],
-  "sandbox_rw": []
+  "sandbox_rw": [],
+  "screener": "off"
 }
