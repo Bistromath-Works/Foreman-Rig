@@ -91,25 +91,52 @@ remaining() { echo $(( $(cat "$1/deadline") - $(date +%s) )); }
 
 # Folders from repo setting $2 (sandbox_ro or sandbox_rw) of settings file $1, one per line,
 # with a leading ~/ turned into the home folder.
-box_paths() { jq -r --arg k "$2" '.[$k][]? // empty' "$1" | sed "s|^~/|$HOME/|"; }
+box_paths() {
+  local p
+  while IFS= read -r p; do
+    case "$p" in '~/'*) p="$HOME/${p#??}" ;; esac
+    printf '%s\n' "$p"
+  done < <(jq -r --arg k "$2" '.[$k][]? // empty' "$1")
+}
 
-# Refuse sandbox settings that would open a hole: paths must be absolute (or start with ~/), and
-# a writable folder may not be /, the home folder, or anything holding or inside the QA home.
+# under A B: path A is B or lies inside B (both already resolved).
+under() { [ "$1" = "$2" ] || [[ "$1/" == "${2%/}/"* ]]; }
+
+# Check the sandbox settings in file $1 for a run on source repo $2, and print the folders to
+# mount as "ro <path>" / "rw <path>" lines with links resolved. Refused, because each would
+# open a hole: a path that is not absolute; any folder that is, or holds, the home folder, /run
+# or /tmp, or lies inside /run (that would bring back what the sandbox hides, sockets included);
+# a writable folder that overlaps the QA home or the source repo; any folder inside a writable
+# one (candidate code could swap it for a link before the next gate).
 check_box() {
-  local rf="$1" k p
+  local rf="$1" repo="$2" k p c q home qa src ro=() rw=()
+  home="$(realpath -m "$HOME")"; qa="$(realpath -m "$QA_HOME")"; src=""
+  [ ! -d "$repo" ] || src="$(realpath -m "$repo")"
+  jq -e '(.sandbox_net // true) | type == "boolean"' "$rf" >/dev/null || die "$rf: sandbox_net must be true or false, without quotes"
   for k in sandbox_ro sandbox_rw; do
     jq -e --arg k "$k" '.[$k] // [] | type == "array" and all(.[]; type == "string")' "$rf" >/dev/null \
       || die "$rf: $k must be a list of folder paths"
     while IFS= read -r p; do
       [[ "$p" == /* && "/$p/" != */../* ]] || die "$rf: $k path must be absolute or start with ~/: $p"
+      c="$(realpath -m "$p")"
+      for q in "$home" /run /tmp; do
+        ! under "$q" "$c" || die "$rf: $k may not be, or hold, $q: $p"
+      done
+      ! under "$c" /run || die "$rf: $k may not be inside /run: $p"
+      if [ "$k" = sandbox_rw ]; then
+        ! under "$qa" "$c" && ! under "$c" "$qa" || die "$rf: sandbox_rw path $p overlaps the QA home; gate results would be writable"
+        [ -z "$src" ] || { ! under "$src" "$c" && ! under "$c" "$src"; } || die "$rf: sandbox_rw path $p overlaps the source repo"
+        rw+=("$c")
+      else ro+=("$c"); fi
     done < <(box_paths "$rf" "$k")
   done
-  while IFS= read -r p; do
-    p="$(realpath -m "$p")"
-    [ "$p" != / ] && [ "$p" != "$(realpath -m "$HOME")" ] || die "$rf: sandbox_rw may not be / or the home folder"
-    case "$(realpath -m "$QA_HOME")/" in "$p"/*) die "$rf: sandbox_rw path $p holds the QA home; gate results would be writable" ;; esac
-    case "$p/" in "$(realpath -m "$QA_HOME")"/*) die "$rf: sandbox_rw path $p is inside the QA home; gate results would be writable" ;; esac
-  done < <(box_paths "$rf" sandbox_rw)
+  for q in "${rw[@]}"; do
+    for c in "${ro[@]}" "${rw[@]}"; do
+      [ "$c" = "$q" ] || ! under "$c" "$q" || die "$rf: $c is inside the writable folder $q; candidate code could swap it for a link"
+    done
+  done
+  for c in "${ro[@]}"; do printf 'ro %s\n' "$c"; done
+  for c in "${rw[@]}"; do printf 'rw %s\n' "$c"; done
 }
 
 # The sandbox must exist and must work here; without it nothing runs (no unprotected fallback).
@@ -126,22 +153,36 @@ need_box() {
 #   - readable from home: only the repo's sandbox_ro folders and the QA home's env/ folder
 #   - the run folder (gate results, contract, probe checks, audit note) is read-only
 #   - the environment is cleared (no tokens), and it has its own process list
-# So candidate code cannot write a gate result, reach the source repo, or use the operator's keys.
+# So candidate code cannot write a gate result or reach the source repo, and sees none of the
+# operator's files beyond the folders the repo's settings name.
+# The folders were checked and resolved when the run started (<run>/box); one that has since
+# become a link to somewhere else stops the command.
 # The network is shared unless the repo sets "sandbox_net": false: services on localhost can
 # still be reached (see qa/README.md).
 boxed() {
-  local run="$1" dir="$2" secs="$3" cmd="$4" p a
+  local run="$1" dir="$2" secs="$3" cmd="$4" k p a
   a=(--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run --tmpfs "$HOME"
      --ro-bind-try /run/systemd/resolve /run/systemd/resolve
      --ro-bind-try "$QA_HOME/env" "$QA_HOME/env")
-  while IFS= read -r p; do a+=(--ro-bind-try "$p" "$p"); done < <(box_paths "$run/repo.json" sandbox_ro)
-  while IFS= read -r p; do a+=(--bind-try "$p" "$p"); done < <(box_paths "$run/repo.json" sandbox_rw)
+  while read -r k p; do
+    [ "$(realpath -m "$p")" = "$p" ] || { say "qa: sandbox folder $p now leads somewhere else; refusing to run"; return 125; }
+    [ -e "$p" ] || continue
+    if [ "$k" = rw ]; then a+=(--bind "$p" "$p"); else a+=(--ro-bind "$p" "$p"); fi
+  done <"$run/box"
   a+=(--ro-bind "$run" "$run" --bind "$dir" "$dir" --bind "$run/evidence" "$run/evidence"
       --unshare-pid --unshare-ipc --die-with-parent --new-session --chdir "$dir"
       --clearenv --setenv PATH "$PATH" --setenv HOME "$HOME" --setenv USER "${USER:-qa}"
       --setenv LANG "${LANG:-C.UTF-8}" --setenv QA_RUN "$run" --setenv QA_EVIDENCE "$run/evidence")
   [ "$(jq -r 'if .sandbox_net == false then "off" else "on" end' "$run/repo.json")" = on ] || a+=(--unshare-net)
-  timeout --kill-after=10 "$secs" bwrap "${a[@]}" bash -c "$cmd"
+  timeout --kill-after=10 "$secs" bwrap "${a[@]}" bash -c "$cmd" </dev/null
+}
+
+# Run boxed "$@" with its output appended to log $1. The sandbox gets a pipe, never the log
+# file itself, so a command cannot cut the log short. Exit status: the command's.
+boxed_log() {
+  local log="$1" rc; shift
+  set +e; boxed "$@" 2>&1 | cat >>"$log"; rc="${PIPESTATUS[0]}"; set -e
+  return "$rc"
 }
 
 # Run shell command $3 in directory $2 for run $1, sandboxed, output to log $4, capped by the
@@ -151,7 +192,7 @@ run_cmd() {
   left="$(remaining "$run")"
   [ "$left" -gt 0 ] || return 124
   printf '$ %s\n' "$cmd" >>"$log"
-  boxed "$run" "$dir" "$left" "$cmd" >>"$log" 2>&1
+  boxed_log "$log" "$run" "$dir" "$left" "$cmd"
 }
 
 # record <run> <gate> <status> <note> [exit]: write the gate's result file once.
@@ -165,12 +206,18 @@ record() {
 
 status_of() { [ -f "$1/gates/$2.json" ] && jq -r .status "$1/gates/$2.json" || echo missing; }
 
-# A fresh detached worktree of rev $3 at <run>/src/$2, with the repo's setup command run in it.
-# If setup fails, records gate $4 (when given) as failed or out of budget and returns 1.
-tree() {
-  local run="$1" name="$2" rev="$3" gate="${4:-}" setup e=0
-  git -C "$run/src/repo" worktree add --quiet --detach "$run/src/$name" "$rev" >/dev/null 2>&1 \
-    || die "could not check out $rev"
+# A fresh detached worktree of rev $3 at <run>/src/$2. Nothing from the candidate has run in it
+# yet, so this is the only moment the unsandboxed script may write into it or run git in it.
+tree_add() {
+  git -C "$1/src/repo" worktree add --quiet --detach "$1/src/$2" "$3" >/dev/null 2>&1 \
+    || die "could not check out $3"
+}
+
+# Run the repo's setup command in tree $2. If it fails, records gate $3 (when given) as failed
+# or out of budget and returns 1. After this the tree may hold anything: links, its own git
+# folder and config. The script only runs sandboxed commands in it from here on.
+tree_setup() {
+  local run="$1" name="$2" gate="${3:-}" setup e=0
   setup="$(rget "$run/repo.json" setup_cmd)"
   [ -n "$setup" ] || return 0
   run_cmd "$run" "$run/src/$name" "$setup" "$run/logs/setup-$name.log" || e=$?
@@ -181,6 +228,12 @@ tree() {
   fi
   return 1
 }
+
+# tree <run> <name> <rev> [gate]: a fresh worktree with setup run in it.
+tree() { tree_add "$1" "$2" "$3"; tree_setup "$1" "$2" "${4:-}"; }
+
+# Delete tree $2 of run $1. Plain delete: git is never run inside a tree after setup.
+tree_drop() { rm -rf "$1/src/$2"; git -C "$1/src/repo" worktree prune 2>/dev/null || true; }
 
 # Run the repo's check command on one check file in tree $2. Exit: the check's.
 check() {
@@ -210,13 +263,15 @@ cmd_new() {
   done
   [ -z "$(jq -r .repro_check "$c")" ] || [ -n "$(rget "$rf" assertion_pattern)" ] \
     || die "$rf has no assertion_pattern; it is required when a contract has a repro check"
-  check_box "$rf"
+  local box; box="$(check_box "$rf" "$repo")" || exit 1
   local n=1 stem; stem="$(jq -r .issue "$c")-$(date +%Y%m%d-%H%M%S)"; id="$stem"
   mkdir -p "$QA_HOME/runs"
   until mkdir "$QA_HOME/runs/$id" 2>/dev/null; do n=$((n+1)); id="$stem-$n"; done
   run="$QA_HOME/runs/$id"
   mkdir -p "$run"/{gates,logs,evidence,probe,src}
   cp "$c" "$run/contract.json"; cp "$rf" "$run/repo.json"
+  printf '%s' "${box:+$box
+}" >"$run/box"
   echo $(( $(date +%s) + 60 * $(jq -r .budget.wall_minutes "$c") )) >"$run/deadline"
   date +%s >"$run/started"
   # A private clone; its remote is dropped once base and candidate are resolved.
@@ -275,15 +330,25 @@ gate_boot() {
   case "$o" in ok) record "$run" boot pass "" "$e" ;; budget) record "$run" boot budget "timed out" "$e" ;; *) record "$run" boot fail "boot command failed" "$e" ;; esac
 }
 
+# The repro check is taken from the candidate commit itself, never from the candidate checkout:
+# boot has run there, so a path in it may now lead anywhere. It is written into the base copy
+# before base's setup runs.
 gate_red() {
-  local run="$1" chk e=0 o
+  local run="$1" chk e=0 o mode
   chk="$(jq -r .repro_check "$run/contract.json")"
   [ -n "$chk" ] || { record "$run" red skip "contract has no repro check"; return; }
-  [ -f "$run/src/candidate/$chk" ] || { record "$run" red fail "repro check $chk is not in the candidate"; return; }
-  tree "$run" base "$(cat "$run/base.sha")" red || return 0
-  inside "$run/src/base" "$chk" && [ ! -L "$run/src/candidate/$chk" ] \
+  mode="$(git -C "$run/src/repo" --literal-pathspecs ls-tree "$(cat "$run/candidate.sha")" -- "$chk" | awk '{print $1}')"
+  case "$mode" in
+    100644|100755) ;;
+    "") record "$run" red fail "repro check $chk is not in the candidate"; return ;;
+    *) record "$run" red fail "repro check $chk is not a plain file in the candidate (a link or a folder)"; return ;;
+  esac
+  tree_add "$run" base "$(cat "$run/base.sha")"
+  inside "$run/src/base" "$chk" && [ ! -L "$run/src/base/$chk" ] \
     || { record "$run" red fail "repro check path $chk leads outside the checkout (symlink)"; return; }
-  mkdir -p "$(dirname "$run/src/base/$chk")"; cp "$run/src/candidate/$chk" "$run/src/base/$chk"
+  mkdir -p "$(dirname "$run/src/base/$chk")"
+  git -C "$run/src/repo" show "$(cat "$run/candidate.sha"):$chk" >"$run/src/base/$chk"
+  tree_setup "$run" base red || return 0
   check "$run" "$run/src/base" "$chk" "$run/logs/red.log" || e=$?
   o="$(outcome "$e" "$run")"
   case "$o" in
@@ -311,10 +376,12 @@ gate_mutation() {
   chk="$(jq -r .repro_check "$run/contract.json")"
   mapfile -t files < <(fix_files "$run")
   if [ -n "$chk" ] && [ "${#files[@]}" -gt 0 ]; then
-    tree "$run" mutant "$(cat "$run/candidate.sha")" mutation || return 0
+    # Reverse the fix first, then run setup: after setup the copy may hold its own git config.
+    tree_add "$run" mutant "$(cat "$run/candidate.sha")"
     git -C "$run/src/repo" --literal-pathspecs diff "$(cat "$run/base.sha")" HEAD -- "${files[@]}" \
       | git -C "$run/src/mutant" apply -R --whitespace=nowarn 2>>"$run/logs/mutation.log" \
       || { record "$run" mutation fail "could not reverse the fix to re-apply the bug" ; return; }
+    tree_setup "$run" mutant mutation || return 0
     check "$run" "$run/src/mutant" "$chk" "$run/logs/mutation.log" || e=$?
     o="$(outcome "$e" "$run")"
     case "$o" in
@@ -359,10 +426,11 @@ gate_probe() {
   # the next one sees. Probe checks only add files: replacing a candidate file could hide a failure.
   for f in "${probes[@]}"; do
     n=$((n+1)); e=0
-    tree "$run" "probe-$n" "$(cat "$run/candidate.sha")" probe || return 0
+    tree_add "$run" "probe-$n" "$(cat "$run/candidate.sha")"
     { [ ! -e "$run/src/probe-$n/$f" ] && [ ! -L "$run/src/probe-$n/$f" ] && inside "$run/src/probe-$n" "$f"; } \
       || { record "$run" probe fail "probe check $f would replace a file already in the candidate"; return; }
     mkdir -p "$(dirname "$run/src/probe-$n/$f")"; cp "$run/probe/$f" "$run/src/probe-$n/$f"
+    tree_setup "$run" "probe-$n" probe || return 0
     check "$run" "$run/src/probe-$n" "$f" "$run/logs/probe.log" || e=$?
     o="$(outcome "$e" "$run")"
     [ "$o" != budget ] || { record "$run" probe budget "timed out at $f"; return; }
@@ -408,12 +476,13 @@ cmd_try() {
   [ "$(remaining "$run")" -gt 0 ] || die "the run's wall-clock budget is spent"
   [ ! -L "$run/probe/$f" ] || die "$f is a symlink; checks must be plain files"
   local t="try-$(date +%s%N)"
-  tree "$run" "$t" "$(cat "$run/candidate.sha")" || die "setup failed in the try copy (logs/setup-$t.log)"
-  { [ ! -e "$run/src/$t/$f" ] && inside "$run/src/$t" "$f"; } || { git -C "$run/src/repo" worktree remove --force "$run/src/$t"; die "$f already exists in the candidate; probe checks must be new files"; }
+  tree_add "$run" "$t" "$(cat "$run/candidate.sha")"
+  { [ ! -e "$run/src/$t/$f" ] && [ ! -L "$run/src/$t/$f" ] && inside "$run/src/$t" "$f"; } || { tree_drop "$run" "$t"; die "$f already exists in the candidate; probe checks must be new files"; }
   mkdir -p "$(dirname "$run/src/$t/$f")"; cp "$run/probe/$f" "$run/src/$t/$f"
+  tree_setup "$run" "$t" || { tree_drop "$run" "$t"; die "setup failed in the try copy (logs/setup-$t.log)"; }
   : >"$run/logs/try.log"
   check "$run" "$run/src/$t" "$f" "$run/logs/try.log" || e=$?
-  git -C "$run/src/repo" worktree remove --force "$run/src/$t" 2>/dev/null || rm -rf "$run/src/$t"
+  tree_drop "$run" "$t"
   cat "$run/logs/try.log"
   say "exit $e"
 }
@@ -474,7 +543,7 @@ cmd_verdict() {
     say "- Recordings and screenshots: $run/evidence/"
     [ -z "$(ls -A "$run/probe" 2>/dev/null)" ] || say "- Prober's checks: $run/probe/"
     [ ! -f "$run/audit.md" ] || say "- Test auditor's note (judgment): $run/audit.md"
-    [ "$gate" = - ] || [ ! -f "$run/logs/$gate.log" ] || { say ""; say "## Last lines of the $gate log"; say '```'; tail -n 30 "$run/logs/$gate.log"; say '```'; }
+    [ "$gate" = - ] || [ ! -f "$run/logs/$gate.log" ] || { say ""; say "## Last lines of the $gate log"; say '```'; tail -n 30 "$run/logs/$gate.log" | sed 's/```/`` `/g'; say '```'; }
   } >"$run/verdict.md"
   cleanup "$run"
   say "$v ($run/verdict.md)"
@@ -498,7 +567,7 @@ cleanup() {
   local run="$1" cmd
   cmd="$(rget "$run/repo.json" teardown_cmd)"
   if [ -n "$cmd" ] && [ -f "$run/booted" ] && [ -d "$run/src/candidate" ]; then
-    boxed "$run" "$run/src/candidate" 300 "$cmd" >>"$run/logs/teardown.log" 2>&1 || say "warning: teardown failed (see $run/logs/teardown.log)"
+    boxed_log "$run/logs/teardown.log" "$run" "$run/src/candidate" 300 "$cmd" || say "warning: teardown failed (see $run/logs/teardown.log)"
   fi
   rm -rf "$run/src"
 }
