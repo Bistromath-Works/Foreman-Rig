@@ -1,0 +1,10 @@
+{
+  "defect": "none",
+  "about": "A correct fix with a test that proves it. The control: it must pass.",
+  "done_condition": "An empty or blank middle name gives exactly one space between the first and last name.",
+  "repro_check": "tests/test_empty_middle.py",
+  "expect": {
+    "verdict": "pass",
+    "caught_by": []
+  }
+}

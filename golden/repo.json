@@ -1,0 +1,16 @@
+{
+  "setup_cmd": "",
+  "boot_cmd": "python3 -c 'import contacts'",
+  "check_cmd": "python3 {check}",
+  "assertion_pattern": "AssertionError",
+  "suite_cmd": "for f in tests/test_*.py; do python3 \"$f\" || exit 1; done",
+  "smoke_cmd": "",
+  "mutation_cmd": "",
+  "teardown_cmd": "",
+  "test_paths": [
+    "tests/"
+  ],
+  "sandbox_ro": [],
+  "sandbox_rw": [],
+  "screener": "off"
+}

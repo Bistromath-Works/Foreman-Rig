@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Golden tasks: a fixed set of small jobs, each with one planted defect, played through the QA
+# gates to measure the factory itself. Run it before and after changing a rule, a threshold or
+# a model, and compare the scores.
+#
+#   scripts/golden [--screener] [--json <file>] [task ...]
+#
+#   --screener     also ask the screener (a live model call; needs OPENROUTER_API_KEY)
+#   --json <file>  write every task's full record to <file>
+#   task ...       only these tasks (default: all, in the order of golden/order)
+#
+# Each task is golden/tasks/<name>/: base/ (the code before), candidate/ (the change under
+# test, defect included), probe/ (the checks a good prober would write), task.json (the done
+# condition, the defect, and which gate is expected to catch it).
+#
+# The gates are the real ones in scripts/qa, run in the real sandbox. The two seats that need a
+# model are stood in for, so the same run always gives the same score: the prober by the task's
+# own probe/ checks, the test auditor by a fixed "covered". So this measures the gates in code.
+# It does not measure how good the live prober or auditor are.
+#
+# Exit status: 0 when every task came out as its task.json expects, 1 otherwise.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GOLDEN="$ROOT/golden"
+QA="$ROOT/scripts/qa"
+GATES=(boot red green mutation probe suite audit)
+
+die() { printf 'golden: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+screener=0; json_out=""; names=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --screener) screener=1 ;;
+    --json) json_out="${2:-}"; [ -n "$json_out" ] || die "--json needs a file"; shift ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) die "unknown option $1" ;;
+    *) names+=("$1") ;;
+  esac
+  shift
+done
+[ "${#names[@]}" -gt 0 ] || mapfile -t names <"$GOLDEN/order"
+[ "$screener" -eq 0 ] || [ -n "${OPENROUTER_API_KEY:-}" ] || die "--screener needs OPENROUTER_API_KEY"
+
+W="$(mktemp -d)"; trap 'chmod -R u+rwX "$W" 2>/dev/null; rm -rf "$W"' EXIT
+export QA_HOME="$W/qa" QA_REPOS="$W/repos"
+mkdir -p "$QA_HOME" "$QA_REPOS"
+records="$W/records.jsonl"; : >"$records"
+gitq() { git -c user.email=golden@example.invalid -c user.name=golden -c init.defaultBranch=main -c commit.gpgsign=false "$@"; }
+
+# Play one task. Appends one JSON record to $records.
+play() {
+  local name="$1" t="$GOLDEN/tasks/$1" r="$W/src/golden-$1" c="$W/$1.contract.json" id run g s
+  local screen="not asked" verdict gate by items=""
+  [ -f "$t/task.json" ] || die "no task '$name' in $GOLDEN/tasks"
+  mkdir -p "$r"; cp -R "$t/base/." "$r/"
+  gitq -C "$r" init -q; gitq -C "$r" add -A; gitq -C "$r" commit -qm base
+  gitq -C "$r" checkout -q -b candidate
+  find "$r" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+  cp -R "$t/candidate/." "$r/"; gitq -C "$r" add -A; gitq -C "$r" commit -qm candidate; gitq -C "$r" checkout -q main
+  jq --argjson on "$screener" '.screener = (if $on == 1 then "openrouter" else "off" end)' "$GOLDEN/repo.json" >"$QA_REPOS/golden-$name.json"
+  jq --arg r "$r" --arg i "golden-$name" '{repo:$r, base:"main", candidate:"candidate", issue:$i, done_condition:.done_condition,
+      repro_check:.repro_check, budget:{wall_minutes:10, tokens:1000}, reply_to:"golden@runner"}
+      + (if .done_items then {done_items:.done_items} else {} end)' "$t/task.json" >"$c"
+
+  if [ "$screener" -eq 1 ]; then
+    s=0; "$ROOT/scripts/screen" check "$c" >"$W/$name.screen.txt" 2>&1 || s=$?
+    items="$(tail -n 1 "$QA_HOME/screener/log.jsonl" 2>/dev/null | jq -c --arg i "golden-$name" 'select(.issue == $i) | [.items[] | {item, p_addressed}]' 2>/dev/null || true)"
+    case "$s" in 3) screen="send back" ;; 0) screen="$(grep -q '^screener skipped' "$W/$name.screen.txt" && echo skipped || echo "no objection")" ;; *) screen="error" ;; esac
+  fi
+
+  id="$("$QA" new "$c" 2>"$W/$name.new.err" | tail -1)" && [ -n "$id" ] || die "could not start a run for $name: $(cat "$W/$name.new.err")"
+  run="$QA_HOME/runs/$id"
+  for g in "${GATES[@]}"; do
+    [ "$g" != probe ] || cp -R "$t/probe/." "$run/probe/"                      # stand-in for the prober
+    [ "$g" != audit ] || printf 'coverage: covered\nstand-in for the test auditor (scripts/golden)\n' >"$run/audit.md"
+    "$QA" gate "$id" "$g" >/dev/null 2>&1 || true
+    s="$(jq -r .status "$run/gates/$g.json" 2>/dev/null || echo missing)"
+    case "$s" in pass|skip) ;; *) break ;; esac
+  done
+  "$QA" verdict "$id" >/dev/null 2>&1 || true
+  verdict="$(jq -r .verdict "$run/verdict.json")"; gate="$(jq -r '.gate // ""' "$run/verdict.json")"
+  if [ "$screen" = "send back" ]; then by=screener; elif [ "$verdict" != pass ]; then by="$gate"; else by=""; fi
+
+  jq -cn --arg n "$name" --arg sc "$screen" --arg v "$verdict" --arg g "$gate" --arg by "$by" --slurpfile t "$t/task.json" --argjson items "${items:-[]}" \
+        --argjson gates "$(for g in "${GATES[@]}"; do [ -f "$run/gates/$g.json" ] && jq -c '{(.gate): {status, note}}' "$run/gates/$g.json"; done | jq -cs 'add // {}')" '
+    $t[0] as $t
+    | ($t.expect.verdict == "pass") as $control
+    | {task:$n, defect:$t.defect, screener:$sc, screener_items:$items, verdict:$v, stopped_at:$g, caught_by:$by, gates:$gates,
+       expected:$t.expect,
+       outcome:(if $control then (if $by == "" then "passed, as it should" else "false alarm" end)
+                elif $by == "" then "missed"
+                elif ($t.expect.caught_by | index($by)) != null then "caught"
+                else "caught elsewhere" end),
+       as_expected:(if $control then $by == ""
+                    elif ($t.expect.caught_by | index("rules")) != null then $by == ""     # a known gap: nothing checks rules yet
+                    else ($t.expect.caught_by | index($by)) != null and ($sc == "send back" or $v == $t.expect.verdict) end)}' >>"$records"
+}
+
+for n in "${names[@]}"; do play "$n"; done
+
+say "Golden tasks: the QA gates in code$([ "$screener" -eq 1 ] && echo ', plus the live screener'). Prober and test auditor are stood in for."
+say ""
+jq -r '[.task, .defect, .outcome + (if .caught_by != "" then " by " + .caught_by else "" end),
+        (if .as_expected then "as expected" else "NOT as expected (expected: " + (.expected.caught_by | if length == 0 then "a pass" else join(" or ") end) + ")" end)] | @tsv' "$records" \
+  | awk -F'\t' 'BEGIN { printf "%-18s %-36s %-26s %s\n", "task", "planted defect", "result", "" } { printf "%-18s %-36s %-26s %s\n", $1, $2, $3, $4 }'
+say ""
+jq -rs '
+  (map(select(.expected.verdict != "pass"))) as $d | (map(select(.expected.verdict == "pass"))) as $c
+  | "score: caught \($d | map(select(.caught_by != "")) | length) of \($d | length) planted defects; \($c | map(select(.caught_by != "")) | length) false alarms on \($c | length) clean task\(if ($c | length) == 1 then "" else "s" end)",
+    (($d | map(select(.caught_by == "")) | map(.task + " (" + .defect + ")")) | if length > 0 then "missed: " + join(", ") else empty end),
+    ((map(select(.as_expected | not)) | map(.task)) | if length > 0 then "not as expected: " + join(", ") else "every task came out as expected" end)' "$records"
+[ -z "$json_out" ] || jq -s . "$records" >"$json_out"
+jq -es 'all(.[]; .as_expected)' "$records" >/dev/null
