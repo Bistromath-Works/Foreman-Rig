@@ -38,6 +38,7 @@ echo "\$*" >> "$T/rig.calls"
 if [ "\$1 \$2" = "config get" ]; then cat "$T/allowlist" 2>/dev/null; fi
 if [ "\$1 \$2" = "daemon status" ]; then cat "$T/daemon.status" 2>/dev/null; fi
 if [ "\$1 \$2" = "spec validate" ] && [ -f "$T/validate.fail" ]; then echo "bad spec"; exit 1; fi
+if [ "\$1" = "up" ] && [ -f "$T/up.fail" ]; then cat "$T/up.fail"; exit 1; fi
 exit 0
 EOF
   chmod +x "$T/bin/rig"
@@ -552,6 +553,20 @@ cp "$HERE/smoke-reference.js" "$S/src/slugify.js"
 (cd "$S" && "$NODE" --test >/dev/null 2>&1) && ok "smoke example: a reference build passes them (the spec is buildable)" \
   || bad "smoke example reference" "$(cd "$S" && "$NODE" --test 2>&1 | tail -20)"
 rm -rf "$S"
+
+# --- a seat that needs a person at start ---
+setup
+"$F" init "$P" >/dev/null; fill checker=codex:gpt-6-astra
+printf 'Error: 1 node requires attention before becoming interactive.\n  crew.checker (crew-checker@foreman-my-app): Startup requires attention: Codex is waiting for hook trust approval before the session can become interactive.\n' > "$T/up.fail"
+PATH="$PATH:$(dirname "$(command -v jq)")" out="$("$F" up "$P" 2>&1)"; rc=$?
+[ $rc -ne 0 ] && ok "up still reports the failure when a seat needs a person" || bad "up exit code" "$out"
+grep -q 'new-session.*foreman-unstick@foreman-my-app' "$T/tmux.calls" 2>/dev/null && ok "up starts the unstick watcher even when a seat needs a person" || bad "unstick watcher after a failed up" "$(cat "$T/tmux.calls" 2>&1)"
+echo "$out" | grep -q "tmux attach -t 'crew-checker@foreman-my-app'" && echo "$out" | grep -q "rig seat continue 'crew-checker@foreman-my-app'" && echo "$out" | grep -q 'Trust all and continue' \
+  && ok "up names the seat waiting on hook trust and gives the three steps" || bad "hook trust steps" "$out"
+rm -f "$T/up.fail" "$T/tmux.calls"
+PATH="$PATH:$(dirname "$(command -v jq)")" out="$("$F" up "$P" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && ! echo "$out" | grep -q 'waiting for you to trust' && grep -q 'new-session' "$T/tmux.calls" && ok "a clean start prints no trust steps and exits 0" || bad "clean up" "$out"
+teardown
 
 # --- banned commands refused by the runtime ---
 setup
