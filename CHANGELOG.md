@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Rules gate (CF-2, first part).** The QA rig now refuses a job that touches a protected
+  file. New repo settings: `protected_paths` (nothing may be added, changed or deleted) and
+  `add_only_paths` (new files are fine, existing ones may not change). The gate runs when a
+  run starts, on the list of changed files, and is the first row of every verdict. The golden
+  tasks now score 8 of 8.
+
 - **Golden tasks (CF-16).** `scripts/golden` plays nine small jobs, eight with one planted
   defect and one clean, through the real QA gates and prints a score. The prober and test
   auditor are stood in for, so the same run always gives the same score. Baseline: 7 of 8

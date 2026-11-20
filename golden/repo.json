@@ -12,5 +12,9 @@
   ],
   "sandbox_ro": [],
   "sandbox_rw": [],
-  "screener": "off"
+  "screener": "off",
+  "protected_paths": [
+    "tests/test_basic.py"
+  ],
+  "add_only_paths": []
 }
