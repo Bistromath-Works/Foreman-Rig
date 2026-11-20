@@ -134,8 +134,9 @@ off unless a repo's settings say `"screener": "openrouter"`. Leave it off for an
 code may not leave the machine. The key is `OPENROUTER_API_KEY` in the environment of the seat
 that runs `scripts/qa send`.
 
-The threshold (an item is "untouched" below a 30% chance it was worked on) is provisional. It
-has not been set on golden tasks yet.
+The threshold (an item is "untouched" below a 30% chance it was worked on) was checked on the
+golden tasks (`scripts/golden --screener`). The set has only one untouched item so far, so
+treat it as a first reading.
 
 `scripts/screen report` lists every screener call beside the verdict of the QA run on the same
 commit, and counts how often QA failed a job the screener had no objection to.

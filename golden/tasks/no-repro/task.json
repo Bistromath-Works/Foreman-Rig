@@ -1,0 +1,12 @@
+{
+  "defect": "test that does not reproduce the bug",
+  "about": "The test checks a case that already worked before the fix.",
+  "done_condition": "An empty or blank middle name gives exactly one space between the first and last name.",
+  "repro_check": "tests/test_empty_middle.py",
+  "expect": {
+    "verdict": "cannot_reproduce",
+    "caught_by": [
+      "red"
+    ]
+  }
+}

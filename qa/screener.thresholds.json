@@ -1,6 +1,6 @@
 {
   "typesafe/jev-1.14": {
     "untouched_below": 0.3,
-    "source": "Provisional. TypeSafe's suggested starting point for a clear no. Not yet set on the golden tasks (CF-16)."
+    "source": "Checked on the golden tasks on 2026-11-20 (scripts/golden --screener): the one untouched item scored 0.09 and every item that was worked on scored 0.91 or higher, so 0.3 separates them with room on both sides. One untouched item is thin evidence; add more untouched-item tasks before trusting this far."
   }
 }

@@ -1,0 +1,12 @@
+{
+  "defect": "fix that does nothing",
+  "about": "The change adds a comment and a test, but the function is the same.",
+  "done_condition": "An empty or blank middle name gives exactly one space between the first and last name.",
+  "repro_check": "tests/test_empty_middle.py",
+  "expect": {
+    "verdict": "fail",
+    "caught_by": [
+      "green"
+    ]
+  }
+}

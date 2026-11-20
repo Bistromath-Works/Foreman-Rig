@@ -1,0 +1,17 @@
+{
+  "defect": "done-condition item left untouched",
+  "about": "Two things were asked for. The second, about initials(), was never worked on.",
+  "done_condition": "An empty or blank middle name gives exactly one space between the first and last name. initials() returns only the last name's initial when the first name is empty, instead of crashing.",
+  "repro_check": "tests/test_empty_middle.py",
+  "expect": {
+    "verdict": "fail",
+    "caught_by": [
+      "screener",
+      "probe"
+    ]
+  },
+  "done_items": [
+    "An empty or blank middle name gives exactly one space between the first and last name.",
+    "initials() returns only the last name's initial when the first name is empty, instead of crashing."
+  ]
+}

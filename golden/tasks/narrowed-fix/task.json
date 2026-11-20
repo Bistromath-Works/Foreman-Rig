@@ -1,0 +1,12 @@
+{
+  "defect": "fix that narrows the problem",
+  "about": "Only the exactly-empty middle name is handled. A blank one still gives two spaces.",
+  "done_condition": "An empty or blank middle name gives exactly one space between the first and last name.",
+  "repro_check": "tests/test_empty_middle.py",
+  "expect": {
+    "verdict": "fail",
+    "caught_by": [
+      "probe"
+    ]
+  }
+}

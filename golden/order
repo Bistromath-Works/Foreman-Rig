@@ -1,0 +1,9 @@
+clean
+noop-fix
+weak-test
+wrong-reason-red
+no-repro
+narrowed-fix
+untouched-item
+breaks-other
+rule-broken

@@ -1,0 +1,12 @@
+{
+  "defect": "fix that breaks something else",
+  "about": "The name fix is right, but the same change also alters phone formatting.",
+  "done_condition": "An empty or blank middle name gives exactly one space between the first and last name.",
+  "repro_check": "tests/test_empty_middle.py",
+  "expect": {
+    "verdict": "fail",
+    "caught_by": [
+      "suite"
+    ]
+  }
+}
