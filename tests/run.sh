@@ -553,6 +553,35 @@ cp "$HERE/smoke-reference.js" "$S/src/slugify.js"
   || bad "smoke example reference" "$(cd "$S" && "$NODE" --test 2>&1 | tail -20)"
 rm -rf "$S"
 
+# --- retro and the lessons ledger ---
+setup
+J="$P/.foreman/jobs/fmn-20261120-0900"; mkdir -p "$J/ctx" "$J/out" "$T/qa/runs/r1" "$T/qa/screener"
+printf 'verdict: BLOCK\nround: 1\n' > "$J/out/check-r1.md"; printf 'verdict: PASS\nround: 2\n' > "$J/out/check-r2.md"
+printf 'status: stuck\n' > "$J/out/code-1.md"; printf 'status: done\n' > "$J/out/code-2.md"; echo "r1 blocked" > "$J/LOG.md"
+echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$J/ctx/qa-r1.json"
+echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$T/qa/runs/r1/contract.json"; echo '{"verdict":"fail","gate":"green"}' > "$T/qa/runs/r1/verdict.json"
+echo '{"issue":"fmn-20261120-0900","decision":"send_back"}' > "$T/qa/screener/log.jsonl"
+out="$(QA_HOME="$T/qa" "$F" retro "$P" fmn-20261120-0900 2>&1)"
+[ "$(jq -c '[.checker_blocks,.checker_passes,.coder_tasks,.coder_stuck,.qa_sends,.qa_verdicts[0],.screener_send_backs]' "$J/retro.json")" = '[1,1,2,1,1,"fail at green",1]' ] \
+  && ok "retro counts the job's rounds, coder tasks, QA verdicts and screener send-backs" || bad "retro numbers" "$(cat "$J/retro.json") $out"
+grep -q 'checker blocks: 1' "$J/ctx/retro.task.md" && grep -q "lesson \"$P\" fmn-20261120-0900" "$J/ctx/retro.task.md" \
+  && ok "retro writes a task file with the numbers and the exact command" || bad "retro task" "$(cat "$J/ctx/retro.task.md")"
+L="$P/.foreman/habits.jsonl"
+out="$(OPENRIG_SESSION_NAME=crew-coder@x "$F" lesson "$P" fmn-20261120-0900 owner out/check-r1.md "The owner briefed the checker without listing what was untested." 2>&1)"
+[ "$(jq -r '.job + " " + .about + " " + .evidence + " " + .by + " " + (.numbers.checker_blocks|tostring)' "$L")" = "fmn-20261120-0900 owner out/check-r1.md crew-coder@x 1" ] \
+  && ok "a lesson is logged with its job, seat, evidence, author and the job's numbers" || bad "lesson logged" "$out $(cat "$L" 2>&1)"
+for bad_args in "nobody|out/check-r1.md|A lesson about a seat that does not exist here." "owner|out/missing.md|The evidence file for this lesson does not exist." "owner|../../project.yaml|The evidence file is outside the job folder here." "owner|out/check-r1.md|too short" "owner|out/check-r1.md|The owner briefed the checker without listing what was untested."; do
+  IFS='|' read -r a e t <<<"$bad_args"
+  "$F" lesson "$P" fmn-20261120-0900 "$a" "$e" "$t" >/dev/null 2>&1 && bad "lesson refused: $a $e" || ok "lesson refused: $a / $e / ${t:0:28}"
+done
+"$F" lesson "$P" fmn-20261120-0900 coder out/code-1.md "The coder stopped and said it was stuck after three tries, as told." >/dev/null 2>&1
+"$F" lesson "$P" fmn-20261120-0900 checker out/check-r1.md "The checker ran the verify command before reading any code." >/dev/null 2>&1
+out="$("$F" lesson "$P" fmn-20261120-0900 crew LOG.md "A fourth lesson for the same job, which is over the cap of three." 2>&1)"
+[ "$(wc -l < "$L")" -eq 3 ] && echo "$out" | grep -q 'cap' && ok "a fourth lesson for one job is refused" || bad "lesson cap" "$out"
+out="$("$F" habits "$P" 2>&1)"; echo "$out" | grep -q '3 lessons from 1 jobs' && ok "habits lists the ledger" || bad "habits" "$out"
+[ -z "$(git -C "$P" status --porcelain 2>/dev/null | grep -v '^?? .foreman')" ] && ok "retro and lessons change nothing in the repo outside .foreman" || bad "retro touched the repo" "$(git -C "$P" status --porcelain)"
+teardown
+
 # Static: every agent ref, role file and skill named in the repo exists.
 missing=""
 for seat in $(sed -n 's/.*agent_ref: "local:agents\/\([a-z]*\)".*/\1/p' "$SRC/rig.template.yaml"); do

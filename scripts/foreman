@@ -7,6 +7,9 @@
 #   scripts/foreman down    <project>            stop the crew
 #   scripts/foreman unstick <project> [--once]   press Enter on OpenRig messages left unsent (up starts it)
 #   scripts/foreman tracing <project> [--off]    send every seat's traces to Langfuse (keys from env)
+#   scripts/foreman retro   <project> <job-id>   after a job: count how it went, write the retro task
+#   scripts/foreman lesson  <project> <job-id> <seat> <evidence-file> "<lesson>"   log one lesson (three per job at most)
+#   scripts/foreman habits  <project>            show the lessons ledger
 #
 # <project> is the path to the git repository the crew will work in.
 set -euo pipefail
@@ -27,7 +30,7 @@ PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_pa
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # --- resolve the project and its rig file -------------------------------------------------
 
@@ -547,6 +550,128 @@ hygiene() {
   done
 }
 
+# --- retro and the lessons ledger -----------------------------------------------------------
+# After each job a seat reads the job's ledger and logs up to three lessons: habits it saw, good
+# or bad, each tied to the file that shows it. This only logs. No rule, prompt or code changes
+# because of a lesson; a later audit reads the ledger and proposes changes for the human.
+# The ledger is <project>/.foreman/habits.jsonl, one lesson per line.
+
+HABIT_SEATS=(owner checker coder auditor qa crew)
+MAX_LESSONS=3
+
+job_dir() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || die "not a job id: ${1:-<none>}"
+  JOB="$1"; JOB_DIR="$PROJECT/.foreman/jobs/$JOB"
+  [ -d "$JOB_DIR" ] || die "no job folder $JOB_DIR"
+  LEDGER="$PROJECT/.foreman/habits.jsonl"
+}
+
+# The job's outcome numbers as one JSON object, counted from the job's own files and the QA rig's
+# records. Counted in code so that no model has to remember them.
+job_numbers() {
+  local qa_home="${QA_HOME:-$HOME/.foreman-qa}" f blocks=0 passes=0 coder=0 stuck=0 qa_sent=0 sb=0 ov=0
+  local verdicts=() issue cand d v
+  for f in "$JOB_DIR"/out/*.md; do
+    [ -f "$f" ] || continue
+    case "$(head -n 12 "$f" | sed -n 's/^verdict:[[:space:]]*\(PASS\|BLOCK\).*/\1/p' | head -1)" in
+      BLOCK) blocks=$((blocks+1)) ;; PASS) passes=$((passes+1)) ;;
+    esac
+    # A coder result starts with "status: done" or "status: stuck" (older jobs used code-* names for checker rounds).
+    case "$(head -n 12 "$f" | sed -n 's/^status:[[:space:]]*\(done\|stuck\).*/\1/p' | head -1)" in
+      done) coder=$((coder+1)) ;; stuck) coder=$((coder+1)); stuck=$((stuck+1)) ;;
+    esac
+  done
+  for f in "$JOB_DIR"/ctx/qa-r*.json; do
+    [ -f "$f" ] && jq -e . "$f" >/dev/null 2>&1 || continue
+    qa_sent=$((qa_sent+1)); issue="$(jq -r '.issue // ""' "$f")"; cand="$(jq -r '.candidate // ""' "$f")"
+    for d in "$qa_home"/runs/*/; do
+      [ -f "$d/verdict.json" ] && [ -f "$d/contract.json" ] || continue
+      [ "$(jq -r '.issue + " " + .candidate' "$d/contract.json")" = "$issue $cand" ] || continue
+      v="$(jq -r '.verdict + (if .gate then " at " + .gate else "" end)' "$d/verdict.json")"; verdicts+=("$v")
+    done
+    if [ -f "$qa_home/screener/log.jsonl" ]; then
+      sb=$((sb + $(jq -c --arg i "$issue" 'select(.issue == $i and .decision == "send_back")' "$qa_home/screener/log.jsonl" 2>/dev/null | wc -l)))
+      ov=$((ov + $(jq -c --arg i "$issue" 'select(.issue == $i and .decision == "overridden")' "$qa_home/screener/log.jsonl" 2>/dev/null | wc -l)))
+    fi
+  done
+  jq -cn --argjson b "$blocks" --argjson p "$passes" --argjson c "$coder" --argjson s "$stuck" --argjson q "$qa_sent" \
+        --argjson sb "$sb" --argjson ov "$ov" --args '{checker_blocks:$b, checker_passes:$p, coder_tasks:$c, coder_stuck:$s,
+          qa_sends:$q, qa_verdicts:$ARGS.positional, screener_send_backs:$sb, screener_overruled:$ov}' "${verdicts[@]}"
+}
+
+cmd_retro() {
+  resolve "${1:-}"; job_dir "${2:-}"
+  local n task="$JOB_DIR/ctx/retro.task.md" me="$ROOT/scripts/foreman"
+  n="$(job_numbers)"; printf '%s\n' "$n" >"$JOB_DIR/retro.json"
+  mkdir -p "$JOB_DIR/ctx"
+  {
+    say "# Retro task for job $JOB"
+    say ""
+    say "Read this job's records and log up to $MAX_LESSONS lessons. A lesson is a habit you can see in"
+    say "the records: something a seat did that cost a round, or something that worked and should be kept."
+    say "You change nothing else: no code, no rule, no other file."
+    say ""
+    say "## Read"
+    say "- \`$JOB_DIR/LOG.md\` and \`DECISIONS.md\` if they exist"
+    say "- every file in \`$JOB_DIR/out/\` (the checker's verdicts, the coder's results, QA verdicts)"
+    say "- the task files in \`$JOB_DIR/ctx/\` that those answer"
+    say ""
+    say "## How the job went, counted from its files"
+    jq -r 'to_entries[] | "- \(.key | gsub("_"; " ")): \(.value | if type == "array" then (if length == 0 then "none" else join("; ") end) else tostring end)"' <<<"$n"
+    say ""
+    say "## Rules for a lesson"
+    say "1. One sentence, 20 to 240 characters, on one line."
+    say "2. It names a habit, not a one-off: \"the owner briefed the checker without saying what was untested\", not \"round 2 was slow\"."
+    say "3. It names the seat it is about: ${HABIT_SEATS[*]}."
+    say "4. It points at one file in this job's folder that shows it."
+    say "5. No code, no names of people or customers, no data from the project. Describe the behavior only."
+    say "6. If the records show nothing worth keeping, log nothing. Zero lessons is a fine result."
+    say ""
+    say "## Log each lesson with this command"
+    say '```'
+    say "$me lesson \"$PROJECT\" $JOB <seat> <file-in-the-job-folder> \"<the lesson>\""
+    say '```'
+    say "The command refuses a fourth lesson, a lesson with no evidence file, and a repeat."
+    say ""
+    say "## When done"
+    say "Write \`$JOB_DIR/out/retro.md\` with one line: \`lessons: <how many you logged>\`. Then hand back."
+  } >"$task"
+  say "$n"
+  say "retro task: $task"
+}
+
+cmd_lesson() {
+  resolve "${1:-}"; job_dir "${2:-}"
+  local about="${3:-}" ev="${4:-}" text="${5:-}" s ok=0 evp count
+  [ $# -eq 5 ] || die "usage: scripts/foreman lesson <project> <job-id> <seat> <evidence-file> \"<lesson>\""
+  for s in "${HABIT_SEATS[@]}"; do [ "$s" = "$about" ] && ok=1; done
+  [ "$ok" -eq 1 ] || die "seat must be one of: ${HABIT_SEATS[*]}"
+  [[ "$text" != *$'\n'* ]] || die "a lesson is one line"
+  [ "${#text}" -ge 20 ] && [ "${#text}" -le 240 ] || die "a lesson is 20 to 240 characters (this one is ${#text})"
+  case "$ev" in /*) evp="$ev" ;; *) evp="$JOB_DIR/$ev" ;; esac
+  [ -f "$evp" ] || die "evidence file not found: $evp"
+  evp="$(cd "$(dirname "$evp")" && pwd -P)/$(basename "$evp")"
+  case "$evp" in "$(cd "$JOB_DIR" && pwd -P)"/*) ;; *) die "the evidence file must be inside the job folder $JOB_DIR" ;; esac
+  touch "$LEDGER"
+  count="$(jq -c --arg j "$JOB" 'select(.job == $j)' "$LEDGER" | wc -l)"
+  [ "$count" -lt "$MAX_LESSONS" ] || die "job $JOB already has $MAX_LESSONS lessons; that is the cap"
+  ! jq -e --arg j "$JOB" --arg t "$text" 'select(.job == $j and .lesson == $t)' "$LEDGER" >/dev/null || die "that lesson is already logged for $JOB"
+  jq -cn --arg at "$(date -u +%FT%TZ)" --arg j "$JOB" --arg a "$about" --arg t "$text" \
+        --arg e "${evp#"$(cd "$JOB_DIR" && pwd -P)"/}" --arg by "${OPENRIG_SESSION_NAME:-unknown}" \
+        --slurpfile n <(cat "$JOB_DIR/retro.json" 2>/dev/null || echo null) \
+    '{at:$at, job:$j, about:$a, lesson:$t, evidence:$e, by:$by, numbers:$n[0]}' >>"$LEDGER"
+  say "logged lesson $((count+1)) of $MAX_LESSONS for $JOB"
+}
+
+cmd_habits() {
+  resolve "${1:-}"
+  local ledger="$PROJECT/.foreman/habits.jsonl"
+  [ -s "$ledger" ] || { say "no lessons logged yet ($ledger)"; return; }
+  jq -r '"\(.at[0:10])  \(.job)  [\(.about)]  \(.lesson)  (\(.evidence))"' "$ledger"
+  say ""
+  say "$(wc -l <"$ledger" | tr -d ' ') lessons from $(jq -r .job "$ledger" | sort -u | wc -l | tr -d ' ') jobs"
+}
+
 # --- main ---------------------------------------------------------------------------------
 
 cmd="${1:-}"; shift || true
@@ -557,5 +682,8 @@ case "$cmd" in
   down)  cmd_down "$@" ;;
   tracing) cmd_tracing "$@" ;;
   unstick) cmd_unstick "$@" ;;
+  retro) cmd_retro "$@" ;;
+  lesson) cmd_lesson "$@" ;;
+  habits) cmd_habits "$@" ;;
   *)     usage ;;
 esac

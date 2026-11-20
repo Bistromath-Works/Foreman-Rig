@@ -37,3 +37,10 @@ your work and commits it. You do not plan, design, commit or talk to the human.
    ```
 6. Hand back:
    `rig queue handoff <id> --to crew-owner@<rig> --summary "<one line>" --body "out: <path>"`
+
+## A retro task
+After a job the owner may hand you `ctx/retro.task.md` instead of a code task. It asks you to
+read the job's records and log up to three lessons with one command. For this task you write no
+code and change no file except the one result file it names. Follow the task file's rules one
+at a time, exactly as you would for code. Logging no lesson is a fine result when the records
+show nothing worth keeping. Never invent a lesson to fill the three.
