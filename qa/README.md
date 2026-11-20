@@ -101,6 +101,7 @@ QA rig's own clone. `""` means none. `boot_cmd`, `check_cmd` and `suite_cmd` are
 | `sandbox_rw` | Folders the commands may write, for a QA-only cache. See "The sandbox" |
 | `sandbox_net` | `false` cuts the network off for every command. Default `true` |
 | `screener` | `"openrouter"` turns the screener on for this repo. Default `"off"`. See "The screener" |
+| `screener_fallback` | A second model to ask when the first cannot answer, e.g. `"liquid/d1.2-ultra"`. Default none |
 
 ## Sending work (the build side)
 
@@ -128,7 +129,7 @@ the candidate's diff? If an item looks untouched, the send is refused and the it
 | Its answer is a judgment | Every line it prints and logs says so |
 | The model's answer is checked in code | An answer that is not a number from 0 to 1 for every item is thrown away |
 | If it cannot run, the job goes on | Off, no key, no threshold, service down, diff over 60,000 characters: logged as skipped, sent to QA |
-| Thresholds are stored per model | `qa/screener.thresholds.json`; a model with no entry does not screen |
+| Thresholds are stored per model | `qa/screener.thresholds.json`; a model with no entry does not screen. Each entry says what it was measured on |
 | The Lead can overrule it, with a reason | `scripts/qa send <contract> --no-screen "<where the item is done>"`, logged |
 
 It is a direct call to TypeSafe's Jev through OpenRouter (`typesafe/jev-1.14`, pinned). The
@@ -144,8 +145,26 @@ treat it as a first reading.
 `scripts/screen report` lists every screener call beside the verdict of the QA run on the same
 commit, and counts how often QA failed a job the screener had no objection to.
 
-Not built yet: the rulebook check, the risk ranking of changed hunks, a local model for
-repos whose code stays on the machine, and the hosted fallback model.
+In the same request it asks two more kinds of question. Their answers are flags for the
+reviewer. They never send a job back.
+
+- **Rule check.** For each rule in `qa/screener.rules.json`: does the change break it? A rule at
+  or above the model's `rule_broken_at` is flagged. The rules are the ones a diff can show
+  (no secret added, no existing test weakened, outside facts carry their source, model output
+  is checked in code). Each names the line in the crew's instructions it comes from, and a
+  test fails if that line goes away.
+- **Risk ranking.** Each changed hunk gets a risk score from 0 (cannot change behavior) to 3
+  (money, permissions, stored data, database structure). The five riskiest at 1.5 or above are
+  listed as "read first". Skipped when the change has more than 40 hunks.
+
+The flags are printed by `scripts/qa send`, logged, saved beside the queued contract and shown
+in the run's `verdict.md` under "Screener flags".
+
+**Fallback model.** A repo may set `"screener_fallback": "liquid/d1.2-ultra"`. It is asked only
+when the first model cannot answer, and only because it has its own stored thresholds. It is
+off by default: its data-retention terms on OpenRouter are not confirmed.
+
+Not built yet: a local model for repos whose code stays on the machine.
 
 ## Hooking up a Foreman crew
 

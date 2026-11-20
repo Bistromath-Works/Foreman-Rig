@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Screener: rule check, risk ranking and a fallback model (CF-14).** In the same request the
+  screener now asks whether the change breaks each rule in `qa/screener.rules.json` and how
+  risky each changed hunk is. Both are flags for the reviewer, shown by `scripts/qa send` and
+  in the verdict; neither sends a job back. Thresholds for Jev and for the fallback
+  `liquid/d1.2-ultra` were measured on the golden tasks and are stored per model. A repo turns
+  the fallback on with `screener_fallback`. The golden set gains `secret-added`.
+
 - **Banned commands are refused by the runtime (CF-2, second part).** `scripts/foreman up` now
   writes the built-in bans and the project's `banned_cmds` to `.foreman/bans.json` and hooks
   `scripts/foreman-guard` into each seat: a PreToolUse hook for claude-code and codex, an

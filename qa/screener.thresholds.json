@@ -1,6 +1,12 @@
 {
   "typesafe/jev-1.14": {
     "untouched_below": 0.3,
-    "source": "Checked on the golden tasks on 2026-11-20 (scripts/golden --screener): the one untouched item scored 0.09 and every item that was worked on scored 0.91 or higher, so 0.3 separates them with room on both sides. One untouched item is thin evidence; add more untouched-item tasks before trusting this far."
+    "source": "Checked on the golden tasks on 2026-11-20 (scripts/golden --screener). Untouched item: 9%; every worked-on item: 91% or higher. Broken rule: 92% (two cases); every unbroken rule: 11% or lower. Both cut-offs sit in a wide gap. The set has one untouched item and two broken rules, so this is a first reading.",
+    "rule_broken_at": 0.7
+  },
+  "liquid/d1.2-ultra": {
+    "untouched_below": 0.3,
+    "rule_broken_at": 0.7,
+    "source": "Checked on the golden tasks on 2026-11-20 (SCREEN_MODEL=liquid/d1.2-ultra scripts/golden --screener). Untouched item: 0%; every worked-on item: 81% or higher. Broken rule: 100% (two cases); every unbroken rule: 1% or lower. Same score as Jev on the set. Its data-retention terms on OpenRouter are not confirmed, so it is off unless a repo names it as screener_fallback."
   }
 }

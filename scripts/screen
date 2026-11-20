@@ -25,6 +25,9 @@ SCREEN_URL="${SCREEN_URL:-https://openrouter.ai/api/v1/systemone}"
 # Pinned: thresholds are stored per model, and an alias like jev-latest moves under them.
 SCREEN_MODEL="${SCREEN_MODEL:-typesafe/jev-1.14}"
 THRESHOLDS="${SCREEN_THRESHOLDS:-$ROOT/qa/screener.thresholds.json}"
+RULES="${SCREEN_RULES:-$ROOT/qa/screener.rules.json}"
+MAX_HUNKS=40      # more changed hunks than this: no risk ranking (the other checks still run)
+TOP_HUNKS=5
 MAX_DIFF_CHARS=60000
 LOG="$QA_HOME/screener/log.jsonl"
 
@@ -34,14 +37,19 @@ usage() { sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 repo_slug() { basename "${1%/}" .git | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-\n' '-'; }
 
 # One line per call. $1 = decision (no_objection | send_back | skipped), $2 = reason,
-# $3 = JSON array of {item, p_addressed} (or []).
+# $3 = JSON array of {item, p_addressed} (or []), $4 = JSON flags object (or omitted).
+# The same record goes to $SCREEN_OUT when the caller names one, so the flags can travel with
+# the contract to the QA run and its verdict.
 log_call() {
   mkdir -p "$(dirname "$LOG")"
-  jq -cn --arg d "$1" --arg r "$2" --argjson items "$3" --arg m "$SCREEN_MODEL" --arg at "$(date -u +%FT%TZ)" \
+  local rec
+  rec="$(jq -cn --arg d "$1" --arg r "$2" --argjson items "$3" --argjson flags "${4:-null}" --arg m "$SCREEN_MODEL" --arg at "$(date -u +%FT%TZ)" \
         --arg issue "$ISSUE" --arg repo "$SLUG" --arg cand "$CAND_SHA" --arg base "$BASE_SHA" \
         --argjson t "${THRESHOLD:-null}" \
     '{at:$at, issue:$issue, repo:$repo, base:$base, candidate:$cand, model:$m, threshold:$t,
-      kind:"judgment", decision:$d, reason:$r, items:$items}' >>"$LOG"
+      kind:"judgment", decision:$d, reason:$r, items:$items} + (if $flags then {flags:$flags} else {} end)')"
+  printf '%s\n' "$rec" >>"$LOG"
+  [ -z "${SCREEN_OUT:-}" ] || printf '%s\n' "$rec" >"$SCREEN_OUT"
 }
 
 # The screener did not run: say why, log it, let the job go on.
@@ -73,24 +81,75 @@ cmd_check() {
   [ "$(wc -c <"$tmp/diff")" -le "$MAX_DIFF_CHARS" ] || skip "diff is over $MAX_DIFF_CHARS characters"
   git -C "$repo" diff --name-only "$BASE_SHA...$CAND_SHA" >"$tmp/files"
 
-  # One yes/no question per done-condition item. The question is only "was this item worked on
-  # at all", never "is it right": right or wrong is for the gates.
-  jq -n --arg m "$SCREEN_MODEL" --rawfile diff "$tmp/diff" --rawfile files "$tmp/files" --slurpfile c "$c" '
-    ($c[0].done_items // [$c[0].done_condition]) as $items
-    | {model:$m,
-       state:{diff:$diff, changed_files:($files | split("\n") | map(select(length > 0)))},
-       questions:([$items | to_entries[] | {key:("item_\(.key)"), value:{
-         type:"noul",
-         instructions:("`diff` is a code change. Does `diff` contain work on this requirement? Requirement: " + .value),
-         criteria:{
-           true:"At least one change in `diff` (code, settings or tests) works toward this requirement, even if it is incomplete or might be wrong",
-           false:"Nothing in `diff` relates to this requirement: it was left untouched"}}}] | from_entries)}' >"$tmp/body.json"
+  # The changed hunks, each with its file, for the risk ranking.
+  awk 'BEGIN { RS = "\n"; first = 1 }
+       /^diff --git / { file = "" ; next }
+       /^\+\+\+ / { file = $0; sub(/^\+\+\+ (b\/)?/, "", file); next }
+       /^(--- |index |new file|deleted file|similarity|rename |old mode|new mode|Binary )/ { next }
+       /^@@/ { if (!first) printf "\036"; first = 0; printf "%s\037", file }
+       !first { print }' "$tmp/diff" >"$tmp/hunks"
+  [ -f "$RULES" ] && jq -e 'type == "array" and all(.[]; (.id | type) == "string" and (.rule | type) == "string")' "$RULES" >/dev/null 2>&1 || echo '[]' >"$tmp/norules"
+  RULE_AT="$(jq -r --arg m "$SCREEN_MODEL" '.[$m].rule_broken_at // empty' "$THRESHOLDS" 2>/dev/null || true)"
+  [[ "$RULE_AT" =~ ^0?\.[0-9]+$ ]] || RULE_AT=""
 
-  local http
-  http="$(printf 'header = "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
-    | curl -sS --max-time 45 --config - -o "$tmp/resp.json" -w '%{http_code}' \
-        -H 'Content-Type: application/json' -H 'User-Agent: foreman-screener/1' \
-        --data-binary "@$tmp/body.json" "$SCREEN_URL" 2>"$tmp/curl.err")" || skip "request failed: $(head -c 200 "$tmp/curl.err" | tr '\n' ' ')"
+  # Three kinds of question about the same change, in one request. Each is answered alone:
+  #   item_N  was this done-condition item worked on at all? (never "is it right")
+  #   rule_N  does the change break this rule?   (only with a stored threshold for the model)
+  #   hunk_N  how risky is this hunk, for the reviewer's reading order
+  jq -n --arg m "$SCREEN_MODEL" --rawfile diff "$tmp/diff" --rawfile files "$tmp/files" --rawfile hunks "$tmp/hunks" \
+        --slurpfile c "$c" --slurpfile rules "$([ -f "$tmp/norules" ] && echo "$tmp/norules" || echo "$RULES")" \
+        --arg rule_at "$RULE_AT" --argjson max "$MAX_HUNKS" '
+    ($c[0].done_items // [$c[0].done_condition]) as $items
+    | ($hunks | split("\u001e") | map(select(length > 0) | split("\u001f") | {file: .[0], text: (.[1] // "")})) as $h
+    | (if ($h | length) <= $max then $h else [] end) as $h
+    | (if $rule_at == "" then [] else $rules[0] end) as $r
+    | {model:$m,
+       state:{diff:$diff, changed_files:($files | split("\n") | map(select(length > 0))), hunks:$h},
+       questions:(
+         ([$items | to_entries[] | {key:("item_\(.key)"), value:{
+           type:"noul",
+           instructions:("`diff` is a code change. Does `diff` contain work on this requirement? Requirement: " + .value),
+           criteria:{
+             true:"At least one change in `diff` (code, settings or tests) works toward this requirement, even if it is incomplete or might be wrong",
+             false:"Nothing in `diff` relates to this requirement: it was left untouched"}}}]
+        + [$r | to_entries[] | {key:("rule_\(.key)"), value:{
+           type:"noul",
+           instructions:("`diff` is a code change; lines starting with + were added and lines starting with - were removed. Does `diff` break this rule? Rule: " + .value.rule),
+           criteria:{
+             true:"At least one added or removed line in `diff` clearly breaks the rule",
+             false:"Nothing in `diff` breaks the rule, or the rule does not apply to what `diff` changes"}}}]
+        + [$h | to_entries[] | {key:("hunk_\(.key)"), value:{
+           type:"score",
+           instructions:("How much could a mistake in the change at `hunks[\(.key)].text` (file `hunks[\(.key)].file`) hurt a user or the business?"),
+           criteria:[
+             "Cannot change behavior: comments, formatting, documentation, renames",
+             "Tests only, or a small local change that is easy to see is right",
+             "Ordinary logic in one place: a mistake gives a wrong result that a user would notice",
+             "Money, permissions, login, deleting or overwriting stored data, database structure, or anything that runs on many records at once"]}}]
+         | from_entries))}' >"$tmp/body.json"
+
+  ask() {   # sends $tmp/body.json; prints the HTTP status, or "failed"
+    printf 'header = "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
+      | curl -sS --max-time 45 --config - -o "$tmp/resp.json" -w '%{http_code}' \
+          -H 'Content-Type: application/json' -H 'User-Agent: foreman-screener/1' \
+          --data-binary "@$tmp/body.json" "$SCREEN_URL" 2>"$tmp/curl.err" || echo failed
+  }
+  local http fb ft
+  http="$(ask)"
+  if [ "$http" != 200 ]; then
+    # The repo may name a fallback model. It is used only when the first one cannot answer, and
+    # only if it has its own stored thresholds.
+    fb="$(jq -r '.screener_fallback // ""' "$rf" 2>/dev/null || true)"
+    ft="$(jq -r --arg m "$fb" '.[$m].untouched_below // empty' "$THRESHOLDS" 2>/dev/null || true)"
+    if [ -n "$fb" ] && [[ "$ft" =~ ^0?\.[0-9]+$ ]]; then
+      say "screener: $SCREEN_MODEL did not answer ($http); asking the fallback $fb"
+      SCREEN_MODEL="$fb"; THRESHOLD="$ft"
+      RULE_AT="$(jq -r --arg m "$fb" '.[$m].rule_broken_at // empty' "$THRESHOLDS" 2>/dev/null || true)"; [[ "$RULE_AT" =~ ^0?\.[0-9]+$ ]] || RULE_AT=""
+      jq --arg m "$fb" '.model = $m' "$tmp/body.json" >"$tmp/body2.json" && mv "$tmp/body2.json" "$tmp/body.json"
+      http="$(ask)"
+    fi
+  fi
+  [ "$http" != failed ] || skip "request failed: $(head -c 200 "$tmp/curl.err" | tr '\n' ' ')"
   [ "$http" = 200 ] || skip "the model service answered HTTP $http"
 
   # Model output is checked in code before anything uses it: every item must have a number 0..1.
@@ -101,17 +160,38 @@ cmd_check() {
     | if all(.[]; (.p_addressed | type) == "number" and .p_addressed >= 0 and .p_addressed <= 1) then . else error("bad answer") end' \
     "$tmp/resp.json" 2>/dev/null)" || skip "the model's answer was not in the expected form"
 
+  # Rule and risk answers are flags for the reviewer. They never send a job back, and a missing
+  # or malformed one is dropped, not guessed.
+  local flags
+  flags="$(jq -c --slurpfile b "$tmp/body.json" --slurpfile rules "$([ -f "$tmp/norules" ] && echo "$tmp/norules" || echo "$RULES")" \
+        --arg rule_at "$RULE_AT" --argjson top "$TOP_HUNKS" '
+    . as $r | ($b[0].state.hunks) as $h
+    | {rules: (if $rule_at == "" then [] else
+         [$rules[0] | to_entries[] | {id:.value.id, rule:.value.rule, p_broken:($r.answers["rule_\(.key)"].noul // null)}
+          | select((.p_broken | type) == "number" and .p_broken >= 0 and .p_broken <= 1)] end),
+       hunks: [$h | to_entries[] | {n:.key, file:.value.file, first_line:(.value.text | split("\n")[0] // ""), risk:($r.answers["hunk_\(.key)"].score // null)}
+               | select((.risk | type) == "number")] }
+    | .rules_flagged = [.rules[] | select(.p_broken >= ($rule_at | tonumber))]
+    | .riskiest = ([.hunks | sort_by(-.risk)[] | select(.risk >= 1.5)] | .[0:$top])
+    | {rules, rules_flagged, riskiest, hunks_ranked: (.hunks | length)}' "$tmp/resp.json" 2>/dev/null)" || flags='{"rules":[],"rules_flagged":[],"riskiest":[],"hunks_ranked":0}'
+
+  show_flags() {
+    jq -r '(.rules_flagged[] | "  rule flag: \(.id) may be broken (\(.p_broken * 100 | round)%): \(.rule)"),
+           (.riskiest[] | "  read first: \(.file) \(.first_line | .[0:60])  (risk \(.risk * 10 | round / 10) of 3)")' <<<"$flags"
+  }
   local untouched
   untouched="$(jq -r --argjson t "$THRESHOLD" '.[] | select(.p_addressed < $t) | "  - \(.item)  (chance it was worked on: \(.p_addressed * 100 | round)%)"' <<<"$items")"
   if [ -n "$untouched" ]; then
-    log_call send_back "done-condition item looks untouched" "$items"
+    log_call send_back "done-condition item looks untouched" "$items" "$flags"
     say "screener judgment (a model's opinion, not a gate): SEND BACK"
     say "These done-condition items look untouched by the change:"
     say "$untouched"
+    show_flags
     exit 3
   fi
-  log_call no_objection "" "$items"
+  log_call no_objection "" "$items" "$flags"
   say "screener judgment (a model's opinion, not a gate): no objection. This is not a pass; the gates decide."
+  [ -z "$(show_flags)" ] || { say "For the reviewer (flags, not findings):"; show_flags; }
 }
 
 # The Lead disagrees with a send-back and sends the job to QA anyway. Logged, so the report

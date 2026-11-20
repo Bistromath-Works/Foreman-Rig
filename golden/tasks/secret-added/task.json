@@ -1,0 +1,13 @@
+{
+  "defect": "secret committed in the code",
+  "about": "The fix is right, but the change also puts an API key straight into a source file. (The key is made up.)",
+  "done_condition": "An empty or blank middle name gives exactly one space between the first and last name.",
+  "repro_check": "tests/test_empty_middle.py",
+  "expect": {
+    "verdict": "pass",
+    "caught_by": [],
+    "flags": [
+      "no-secrets"
+    ]
+  }
+}
