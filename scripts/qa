@@ -41,7 +41,9 @@ need jq; need git
 # settings are left out, so a filter, diff driver or hook defined there is never run on the
 # candidate's files just because the candidate's .gitattributes names it.
 g() {
-  env -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_EXTERNAL_DIFF \
+  local v u=(-u GIT_EXTERNAL_DIFF)
+  for v in $(git rev-parse --local-env-vars); do u+=(-u "$v"); done   # GIT_DIR, GIT_COMMON_DIR, GIT_CONFIG_COUNT, ...
+  env "${u[@]}" \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null "$@"
 }
@@ -110,6 +112,10 @@ box_paths() {
   done < <(jq -r --arg k "$2" '.[$k][]? // empty' "$1")
 }
 
+# oneline P: the resolved form of path P has no line break in it (checked on realpath's own
+# NUL-ended output, since $(...) would drop a trailing one).
+oneline() { [ "$(realpath -zm -- "$1" | tr -d '\0' | wc -l)" -eq 0 ]; }
+
 # under A B: path A is B or lies inside B (both already resolved).
 under() { [ "$1" = "$2" ] || [[ "$1/" == "${2%/}/"* ]]; }
 
@@ -122,6 +128,7 @@ under() { [ "$1" = "$2" ] || [[ "$1/" == "${2%/}/"* ]]; }
 # (candidate code could swap it for a link before the next gate).
 check_box() {
   local rf="$1" repo="$2" k p c q home qa src ro=() rw=() keep=()
+  case "$repo" in file://*%*) die "repo $repo: write a local repo as a plain path, not a file:// address with % codes" ;; esac
   repo="${repo#file://localhost}"; repo="${repo#file://}"
   home="$(realpath -m "$HOME")"; qa="$(realpath -m "$QA_HOME")"; src=""
   [ ! -d "$repo" ] || src="$(realpath -m "$repo")"
@@ -135,7 +142,7 @@ check_box() {
       [[ "$p" == /* && "/$p/" != */../* ]] || die "$rf: $k path must be absolute or start with ~/: $p"
       case "$p" in *[[:space:]]) die "$rf: $k path may not end in a space: '$p'" ;; esac
       c="$(realpath -m "$p")"
-      [[ "$c" != *$'\n'* ]] || die "$rf: $k path leads to a folder with a line break in its name: $p"
+      oneline "$p" && [[ "$c" != *$'\n'* ]] || die "$rf: $k path leads to a folder with a line break in its name: $p"
       ! under "$qa" "$c" && ! under "$c" "$qa" || die "$rf: $k path $p overlaps the QA home; gate results and other runs live there"
       for q in "$home" /run /tmp /proc /dev /sys; do
         ! under "$q" "$c" || die "$rf: $k may not be, or hold, $q: $p"
@@ -171,7 +178,7 @@ need_box() {
 # Every command from a repo's settings runs here, and so does all candidate code. Inside:
 #   - the whole disk is read-only; the home folder, /tmp and /run are empty scratch space
 #   - writable: the checkout ($2), the run's evidence folder, and the repo's sandbox_rw folders
-#   - readable from home: only the repo's sandbox_ro folders and the QA home's env/ folder
+#   - readable from home: only the repo's sandbox_ro folders and the QA home's env/<repo>.env
 #   - the run folder (gate results, contract, probe checks, audit note) is read-only, and the
 #     rest of the QA home, other runs included, is hidden
 #   - the environment is cleared (no tokens), and it has its own process list
@@ -184,11 +191,12 @@ need_box() {
 boxed() {
   local run="$1" dir="$2" secs="$3" cmd="$4" k p a
   a=(--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run --tmpfs "$HOME"
-     --ro-bind-try /run/systemd/resolve /run/systemd/resolve
-     --tmpfs "$QA_HOME" --ro-bind-try "$QA_HOME/env" "$QA_HOME/env")
+     --ro-bind-try /run/systemd/resolve/stub-resolv.conf /run/systemd/resolve/stub-resolv.conf
+     --ro-bind-try /run/systemd/resolve/resolv.conf /run/systemd/resolve/resolv.conf
+     --tmpfs "$QA_HOME" --ro-bind-try "$QA_HOME/env/$(cat "$run/slug").env" "$QA_HOME/env/$(cat "$run/slug").env")
   while IFS= read -r p; do
     k="${p%% *}"; p="${p#* }"
-    [ "$(realpath -m "$p")" = "$p" ] || { say "qa: sandbox folder $p now leads somewhere else; refusing to run"; return 125; }
+    [ "$(realpath -m "$p")" = "$p" ] && oneline "$p" || { say "qa: sandbox folder $p now leads somewhere else; refusing to run"; return 125; }
     [ -e "$p" ] || continue
     if [ "$k" = rw ]; then a+=(--bind "$p" "$p"); else a+=(--ro-bind "$p" "$p"); fi
   done <"$run/box"
@@ -214,7 +222,7 @@ run_cmd() {
   local run="$1" dir="$2" cmd="$3" log="$4" left
   left="$(remaining "$run")"
   [ "$left" -gt 0 ] || return 124
-  printf '$ %s\n' "$cmd" >>"$log"
+  printf '$ %s\n' "${cmd//$'\n'/$'\n$ '}" >>"$log"   # every line of the command is marked, so red_ok can skip it
   boxed_log "$log" "$run" "$dir" "$left" "$cmd"
 }
 
@@ -282,7 +290,13 @@ fix_files() {
 # Pathspecs that leave out what a fix reversal must keep: the tests and the repro check.
 kept_spec() {
   local run="$1" p
-  while read -r p; do [ -z "$p" ] || printf ':(exclude)%s\0' "$p"; done < <(jq -r '.test_paths[]? // empty' "$run/repo.json")
+  while read -r p; do
+    case "$p" in
+      "") ;;
+      ":("*) printf ':(exclude,%s\0' "${p#:(}" ;;   # already has pathspec magic: join it, do not nest it
+      *) printf ':(exclude)%s\0' "$p" ;;
+    esac
+  done < <(jq -r '.test_paths[]? // empty' "$run/repo.json")
   p="$(jq -r .repro_check "$run/contract.json")"; [ -z "$p" ] || printf ':(exclude,literal)%s\0' "$p"
 }
 
@@ -305,7 +319,7 @@ cmd_new() {
   until mkdir "$QA_HOME/runs/$id" 2>/dev/null; do n=$((n+1)); id="$stem-$n"; done
   run="$QA_HOME/runs/$id"
   mkdir -p "$run"/{gates,logs,evidence,probe,src}
-  cp "$c" "$run/contract.json"; cp "$rf" "$run/repo.json"
+  cp "$c" "$run/contract.json"; cp "$rf" "$run/repo.json"; printf '%s' "$slug" >"$run/slug"
   printf '%s' "${box:+$box
 }" >"$run/box"
   echo $(( $(date +%s) + 60 * $(jq -r .budget.wall_minutes "$c") )) >"$run/deadline"
@@ -390,7 +404,8 @@ gate_red() {
   # copy of the check has the same bytes and mode as the one the green gate will run.
   [ -f "$run/src/repo/$chk" ] && [ ! -L "$run/src/repo/$chk" ] && inside "$run/src/repo" "$chk" \
     || { record "$run" red fail "could not read repro check $chk from the candidate commit"; return; }
-  mkdir -p "$(dirname "$run/src/base/$chk")"; rm -f "$run/src/base/$chk"
+  mkdir -p "$(dirname "$run/src/base/$chk")" && rm -rf "$run/src/base/$chk" \
+    || { record "$run" red fail "could not make room for repro check $chk in the base copy"; return; }
   cp -p "$run/src/repo/$chk" "$run/src/base/$chk" \
     || { record "$run" red fail "could not copy repro check $chk into the base copy"; return; }
   tree_setup "$run" base red || return 0
@@ -413,6 +428,20 @@ gate_green() {
   case "$o" in ok) record "$run" green pass "" "$e" ;; budget) record "$run" green budget "timed out" "$e" ;; *) record "$run" green fail "repro check fails on the candidate" "$e" ;; esac
 }
 
+# reverse_fix <run> <file>...: in the fresh mutant copy, put the named files back to base.
+reverse_fix() {
+  local run="$1" m="$1/src/mutant" f; shift
+  local -A fix=(); for f in "$@"; do fix["$f"]=1; done
+  # Empty the copy (tracked files only; a fresh checkout holds nothing else), reset, rewrite.
+  ( cd "$m" && g ls-files -z | xargs -0 -r rm -f -- ) || return 1
+  g -C "$m" --literal-pathspecs reset -q "$(cat "$run/base.sha")" -- "$@" || return 1
+  while IFS= read -r -d '' f; do
+    [ -n "${fix[$f]:-}" ] || g -C "$m" --literal-pathspecs ls-files --error-unmatch -- "$f" >/dev/null 2>&1 \
+      || { echo "reversing the fix would drop $f, which is not part of the fix"; return 1; }
+  done < <(g -C "$run/src/repo" ls-tree -r -z --name-only HEAD)
+  g -C "$m" checkout-index -a -f || return 1
+}
+
 # 1) Put the bug back (reverse the fix, keep the tests): the repro check must fail again.
 # 2) The repo's mutation tool on the changed files, if it has one; it exits non-zero when too
 #    many mutants survive (Stryker: thresholds.break).
@@ -423,15 +452,14 @@ gate_mutation() {
   mapfile -d '' -t files <"$run/fix-files"
   if [ -n "$chk" ] && [ "${#files[@]}" -gt 0 ]; then
     # Reverse the fix first, then run setup: after setup the copy may hold its own git config.
+    # The reversal is done in the index (the fix's files go back to their base versions) and
+    # the whole copy is then written out fresh, so line-ending and other attribute rules that
+    # the fix changed apply as they did on base. Nothing but the fix's files may change: if
+    # going back would drop a file that is meant to stay (a kept test), the gate fails.
     tree_add "$run" mutant "$(cat "$run/candidate.sha")"
-    # Same exclusions as the file list: a changed path that is now a folder also matches the
-    # tests inside it, and those must stay.
-    local only=() kept=()
-    for o in "${files[@]}"; do only+=(":(literal)$o"); done
-    mapfile -d '' -t kept < <(kept_spec "$run")
-    g -C "$run/src/repo" diff --binary --no-renames --no-ext-diff --no-textconv "$(cat "$run/base.sha")" HEAD -- "${only[@]}" "${kept[@]}" \
-      | g -C "$run/src/mutant" apply -R --whitespace=nowarn 2>>"$run/logs/mutation.log" \
-      || { record "$run" mutation fail "could not reverse the fix to re-apply the bug" ; return; }
+    if ! reverse_fix "$run" "${files[@]}" 2>>"$run/logs/mutation.log"; then
+      record "$run" mutation fail "could not reverse the fix to re-apply the bug"; return
+    fi
     tree_setup "$run" mutant mutation || return 0
     check "$run" "$run/src/mutant" "$chk" "$run/logs/mutation.log" || e=$?
     o="$(outcome "$e" "$run")"
