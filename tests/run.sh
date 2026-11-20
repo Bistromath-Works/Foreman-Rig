@@ -553,6 +553,66 @@ cp "$HERE/smoke-reference.js" "$S/src/slugify.js"
   || bad "smoke example reference" "$(cd "$S" && "$NODE" --test 2>&1 | tail -20)"
 rm -rf "$S"
 
+# --- banned commands refused by the runtime ---
+setup
+"$F" init "$P" --coder >/dev/null; fill checker=codex:gpt-6-astra coder=pi:vllm/qwen3.8-27b
+sed -i 's|^banned_cmds: .*|banned_cmds: ["vercel", "supabase db push", "pnpm install (without --frozen-lockfile --offline)"]|' "$P/.foreman/project.yaml"
+echo '{"permissions":{"allow":["Bash(rig queue *)"]},"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"my-own-hook"}]}]}}' > "$P/.claude.tmp"; mkdir -p "$P/.claude"; mv "$P/.claude.tmp" "$P/.claude/settings.local.json"
+PATH="$PATH:$(dirname "$(command -v jq)")" out="$("$F" bans "$P" 2>&1)"; rc=$?
+B="$P/.foreman/bans.json"; G="$T/foreman/scripts/foreman-guard"
+[ $rc -eq 0 ] && [ "$(jq -c '[.bans[] | select(.source == "banned_cmds") | [.text, (.unless // [])]]' "$B")" = '[["vercel",[]],["supabase db push",[]],["pnpm install",["--frozen-lockfile","--offline"]]]' ] \
+  && jq -e '[.bans[].text] | index("git push") != null and index("gh") != null' "$B" >/dev/null \
+  && ok "bans writes the list: built-in bans plus banned_cmds, with the 'without' form read" || bad "bans list" "$out $(cat "$B" 2>&1)"
+C="$P/.claude/settings.local.json"
+[ "$(jq -r '[.hooks.PreToolUse[] | .matcher] | join(",")' "$C")" = "Edit,Bash" ] && jq -e '.permissions.allow[0] == "Bash(rig queue *)"' "$C" >/dev/null \
+  && jq -r '.hooks.PreToolUse[1].hooks[0].command' "$C" | grep -q 'foreman-guard.*bans.json' && ok "claude-code gets the guard hook; its other settings and hooks are kept" || bad "claude hook" "$(cat "$C")"
+[ "$(jq -r '.hooks.PreToolUse[0].matcher + " " + .hooks.PreToolUse[0].hooks[0].type' "$P/.codex/hooks.json")" = '^Bash$ command' ] && ok "codex gets the guard hook in .codex/hooks.json" || bad "codex hook" "$(cat "$P/.codex/hooks.json" 2>&1)"
+X="$OPENRIG_HOME/state/pi/crew-coder@foreman-my-app/agent/extensions/foreman-guard.ts"
+grep -q 'pi.on("tool_call"' "$X" && grep -qF "$B" "$X" && ok "the pi seat gets the guard extension in its own agent folder" || bad "pi extension" "$(cat "$X" 2>&1)"
+echo "$out" | grep -q 'ONCE YOU TRUST IT' && echo "$out" | grep -q 'seat coder (pi)' && ok "bans says which seats are covered and what the human still has to do" || bad "bans message" "$out"
+hookcmd="$(jq -r '.hooks.PreToolUse[1].hooks[0].command' "$C")"
+guard() { printf '%s' "$1" | PATH="$PATH:$(dirname "$(command -v jq)")" bash -c "$hookcmd" 2>"$T/guard.err"; }
+guard '{"tool_name":"Bash","tool_input":{"command":"git push origin main"}}'; [ $? -eq 2 ] && grep -q 'Blocked by Foreman' "$T/guard.err" && ok "the installed hook refuses git push, from a project path with a space" || bad "hook refuses push" "$(cat "$T/guard.err")"
+guard '{"tool_name":"Bash","tool_input":{"command":"pnpm test"}}'; [ $? -eq 0 ] && ok "the installed hook lets an ordinary command through" || bad "hook allows" "$(cat "$T/guard.err")"
+gcheck() { printf '%s' "$2" | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$B" --command 2>/dev/null; [ $? -eq "$1" ]; }
+allok=1
+while IFS='|' read -r want cmd; do gcheck "$want" "$cmd" || { allok=0; bad "guard: want $want for: $cmd"; }; done <<'CASES'
+2|git push
+2|bash -lc 'git   push --force'
+2|git remote add up https://example.invalid/x.git
+2|gh pr create
+2|/usr/bin/gh auth status
+2|npx vercel deploy
+2|supabase db push
+2|pnpm install
+2|pnpm install --frozen-lockfile
+2|pnpm dev &
+2|nohup pnpm dev
+2|(sleep 9 &)
+0|git status
+0|git log --grep=push
+0|echo though it is high enough
+0|cat vercel.json
+0|supabase db diff
+0|pnpm install --frozen-lockfile --offline
+0|pnpm test 2>&1 | tail -5
+0|pnpm lint && pnpm typecheck
+0|curl -s "http://localhost:3000/api?a=1&b=2"
+0|echo done >&2
+CASES
+[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (22 cases)"
+printf '{"tool_name":"Bash","tool_input":{"command":"ls","run_in_background":true}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$B" 2>/dev/null; [ $? -eq 2 ] && ok "a command started in the background is refused" || bad "background flag"
+printf '{"tool_name":"Read","tool_input":{"file_path":"vercel.json"}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$B" 2>/dev/null; [ $? -eq 0 ] && ok "tools that are not a shell are not the guard's business" || bad "non-shell tool"
+printf '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$T/nowhere.json" 2>/dev/null; [ $? -eq 2 ] && ok "with no readable ban list the guard refuses, it does not wave commands through" || bad "guard fails closed"
+PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" >/dev/null 2>&1
+[ "$(jq '.hooks.PreToolUse | length' "$C")" = 2 ] && ok "running bans twice does not add the hook twice" || bad "bans idempotent" "$(cat "$C")"
+PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" --off >/dev/null 2>&1
+[ "$(jq -r '[.hooks.PreToolUse[] | .matcher] | join(",")' "$C")" = "Edit" ] && [ ! -e "$P/.codex/hooks.json" ] && [ ! -e "$X" ] && [ ! -e "$B" ] \
+  && ok "bans --off removes the guard everywhere and leaves other hooks alone" || bad "bans off" "$(cat "$C"; ls "$P/.codex" "$X" "$B" 2>&1)"
+sed -i 's|^banned_cmds: .*|banned_cmds: vercel, supabase|' "$P/.foreman/project.yaml"
+out="$(PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'must be a list' && ok "a banned_cmds the program cannot read is refused with the right form shown" || bad "bad banned_cmds" "$out"
+teardown
+
 # --- retro and the lessons ledger ---
 setup
 J="$P/.foreman/jobs/fmn-20261120-0900"; mkdir -p "$J/ctx" "$J/out" "$T/qa/runs/r1" "$T/qa/screener"

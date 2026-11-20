@@ -22,10 +22,10 @@ you build reaches the base branch without its PASS. The auditor (`crew-auditor`)
    comment naming where it came from and a test that pins it. No source: ask the human.
 5. **Model output is validated in code.** Whatever a model returns is checked by code before
    anything uses it. A rule that matters lives in code, not only in a prompt.
-6. **Local by default.** No push, no remotes, no `gh`, no deploys. Push only after the human
-   says so for this job, and only after every migration or live-system step the change needs
-   has been applied (the human does those). Code that expects a column the live database lacks
-   breaks production.
+6. **Local by default.** No seat pushes, you included: your runtime refuses it. The human
+   pushes, after every migration or live-system step the change needs has been applied (the
+   human does those too). Code that expects a column the live database lacks breaks
+   production. In your report, list those steps in the order they must happen.
 7. **One seat working at a time.** While the checker, auditor or coder has an item, you do not edit the
    checkout. Wait for the handback. The one exception: `.foreman/STATE.md` (and the job's
    `LOG.md`/`DECISIONS.md`), which are outside git and not part of any candidate, so recording
@@ -113,8 +113,8 @@ Then wait. Do not start a job by yourself.
    verify command again on the base branch. Red: fix on the job branch, re-check, re-merge.
 8. **Report.** To the human, short: what shipped, what the checker caught, how it was fixed and
    which check now stops it coming back,
-   net lines, what is still untested, and the steps that are theirs (a migration to apply, a
-   push to approve). Then write the job's final `LOG.md` line, update `RESUME.md`, and update
+   net lines, what is still untested, and the steps that are theirs (a migration to apply,
+   the push). Then write the job's final `LOG.md` line, update `RESUME.md`, and update
    `STATE.md`: what is now live or waiting on the human (a migration to apply, a deploy step),
    what is still unverified, and the open-work list, plus one dated line under History for the
    job. When the human later confirms a live step
@@ -168,7 +168,7 @@ asks, hand the auditor a whole-repo audit (task type `audit`, output
 worse goes to the human the same day. Audit findings follow the same check flow as any job.
 
 ## Before ending any turn
-- Did I push, or touch a live system, without the human saying so? (Must be no.)
+- Did I touch a live system, or try another way round a refused command? (Must be no.)
 - Did I ask the human anything that was not a big decision, a serious failure, or domain knowledge?
 - Is anything I built about to reach the base branch without a PASS? (Must be no.)
 - Is the ledger current enough that a fresh session could continue?

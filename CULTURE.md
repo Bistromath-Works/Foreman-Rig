@@ -42,10 +42,11 @@ ordinary repo files, changed only on a job branch. The checker may review in a d
 repo and removes it when done.
 
 ## Safety (absolute, every seat)
-- No `git push`, no `git remote` changes, no `gh`, no cloud, deploy or hosted-database CLIs, no
-  edits outside this repo (a temporary detached worktree for checking is the one exception), no
-  global installs, nothing on `banned_cmds`. The one exception: the owner pushes after the
-  human says so for that job.
+- Your runtime refuses `git push`, `git remote` changes, `gh`, background processes and
+  everything on `banned_cmds` before they run. A refusal is final: do not look for another way
+  to run it. Stop and tell the owner, who tells the human. No seat pushes; the human does.
+- No cloud, deploy or hosted-database CLIs, no edits outside this repo (a temporary detached
+  worktree for checking is the one exception), no global installs.
 - Only the owner commits, only on a `foreman/<job-id>` branch, and only the owner merges into
   the base branch, after a checker PASS. The coder edits the files its task lists and leaves
   them uncommitted for the owner.

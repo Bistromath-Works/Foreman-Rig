@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Banned commands are refused by the runtime (CF-2, second part).** `scripts/foreman up` now
+  writes the built-in bans and the project's `banned_cmds` to `.foreman/bans.json` and hooks
+  `scripts/foreman-guard` into each seat: a PreToolUse hook for claude-code and codex, an
+  extension for pi. Push, remote changes, `gh`, background processes and listed commands are
+  refused before they run. Codex needs the hook trusted once per seat, in `/hooks`. **No seat
+  pushes any more, the owner included; the human does.** `banned_cmds` must be a one-line list
+  of quoted texts. `scripts/foreman bans <project> [--off]` does the same without a launch.
+
 - **Rules gate (CF-2, first part).** The QA rig now refuses a job that touches a protected
   file. New repo settings: `protected_paths` (nothing may be added, changed or deleted) and
   `add_only_paths` (new files are fine, existing ones may not change). The gate runs when a

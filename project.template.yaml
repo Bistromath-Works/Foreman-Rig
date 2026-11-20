@@ -24,6 +24,8 @@ protected_paths: SET-ME        # e.g. [migrations/, .github/], or []
 # Commands no seat may run, on top of the built-in ban on push, remotes, gh and backgrounded
 # processes. List deploys, production database tools, anything that reaches outside this repo.
 # Read by the crew: any command containing a listed text is banned. [] for none.
+# Each seat's runtime refuses these before they run (scripts/foreman up sets that up). One line,
+# texts in quotes. "text (without word word)" bans the text unless the command has those words.
 banned_cmds: SET-ME            # e.g. ["vercel", "supabase db push", "terraform apply"], or []
 
 # With the auditor seat: how many merged jobs between whole-repo audits, or "manual" (only when

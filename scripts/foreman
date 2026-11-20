@@ -7,6 +7,7 @@
 #   scripts/foreman down    <project>            stop the crew
 #   scripts/foreman unstick <project> [--once]   press Enter on OpenRig messages left unsent (up starts it)
 #   scripts/foreman tracing <project> [--off]    send every seat's traces to Langfuse (keys from env)
+#   scripts/foreman bans    <project> [--off]    make every seat's runtime refuse the banned commands (up does this)
 #   scripts/foreman retro   <project> <job-id>   after a job: count how it went, write the retro task
 #   scripts/foreman lesson  <project> <job-id> <seat> <evidence-file> "<lesson>"   log one lesson (three per job at most)
 #   scripts/foreman habits  <project>            show the lessons ledger
@@ -30,7 +31,7 @@ PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_pa
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-usage() { sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # --- resolve the project and its rig file -------------------------------------------------
 
@@ -256,6 +257,7 @@ cmd_up() {
   cmd_check "${1:-}"
   hygiene
   seed_pi_models
+  install_bans 0
   say "Launching $RIG_NAME in $PROJECT ..."
   rig up "$RIG_FILE" --cwd "$PROJECT"
   say ""
@@ -550,6 +552,112 @@ hygiene() {
   done
 }
 
+# --- banned commands, refused by each seat's runtime ----------------------------------------
+# The project's banned_cmds and Foreman's built-in bans are written to <project>/.foreman/bans.json,
+# and each runtime is told to ask scripts/foreman-guard before it runs a shell command:
+#   claude-code  a PreToolUse hook in <project>/.claude/settings.local.json
+#   codex        a PreToolUse hook in <project>/.codex/hooks.json (the human trusts it once per seat, in /hooks)
+#   pi           an extension in each pi seat's own agent folder
+# A banned command is then refused before it runs, whatever the seat's prompt says.
+
+BUILTIN_BANS=("git push" "git remote add" "git remote set-url" "git remote remove" "git remote rename" "gh")
+
+# Write the ban list. A banned_cmds entry is plain text, or "text (without word word)": banned
+# unless the command also has every one of those words.
+write_bans() {
+  local raw; raw="$(project_value banned_cmds)"
+  [ "$raw" != "[list]" ] || die "banned_cmds in $PROJECT_FILE is a dash list; write it on one line: banned_cmds: [\"vercel\", \"supabase db push\"]"
+  [ -n "$raw" ] || raw="[]"
+  jq -e 'type == "array" and all(.[]; type == "string")' <<<"$raw" >/dev/null 2>&1 \
+    || die "banned_cmds in $PROJECT_FILE must be a list of texts in quotes on one line, e.g. [\"vercel\", \"supabase db push\"]"
+  mkdir -p "$PROJECT/.foreman"
+  jq -n --argjson p "$raw" --args '
+    {project: $ENV.PROJECT_DIR, background: true,
+     bans: ([$ARGS.positional[] | {text: ., source: "built-in"}]
+          + [$p[] | select(length > 0) | (capture("^(?<text>.*\\S)\\s*\\(without (?<u>[^)]*)\\)\\s*$") // null) as $m
+             | if $m then {text: $m.text, unless: ($m.u | split(" ") | map(select(length > 0))), source: "banned_cmds"}
+               else {text: ., source: "banned_cmds"} end])}' "${BUILTIN_BANS[@]}" >"$PROJECT/.foreman/bans.json.tmp" \
+    && mv "$PROJECT/.foreman/bans.json.tmp" "$PROJECT/.foreman/bans.json"
+}
+
+# install_bans <off>: 0 writes the list and the three hooks, 1 removes them.
+install_bans() {
+  local off="$1" guard="$ROOT/scripts/foreman-guard" list="$PROJECT/.foreman/bans.json" hook runtimes id rt md dir
+  command -v node >/dev/null 2>&1 || die "node is needed to edit the JSON settings files (OpenRig needs it too)"
+  command -v jq >/dev/null 2>&1 || die "jq is needed for the command guard"
+  if [ "$off" -eq 0 ]; then PROJECT_DIR="$PROJECT" write_bans; else rm -f "$list"; fi
+  hook="$(printf '%q %q' "$guard" "$list")"
+  runtimes="$(members | awk '{print $2}' | sort -u)"
+  case "$runtimes" in *claude-code*)
+    mkdir -p "$PROJECT/.claude"
+    FILE="$PROJECT/.claude/settings.local.json" HOOK="$hook" OFF="$off" MATCH="Bash" json_edit "$BAN_EDIT" ;;
+  esac
+  case "$runtimes" in *codex*)
+    mkdir -p "$PROJECT/.codex"
+    FILE="$PROJECT/.codex/hooks.json" HOOK="$hook" OFF="$off" MATCH="^Bash$" json_edit "$BAN_EDIT" ;;
+  esac
+  while read -r id rt md; do
+    [ "$rt" = pi ] || continue
+    dir="${OPENRIG_HOME:-$HOME/.openrig}/state/pi/crew-$id@$RIG_NAME/agent/extensions"
+    if [ "$off" -eq 1 ]; then rm -f "$dir/foreman-guard.ts"; continue; fi
+    mkdir -p "$dir"
+    GUARD="$guard" LIST="$list" node -e '
+      const fs = require("fs");
+      fs.writeFileSync(process.argv[1], `// Written by scripts/foreman bans. Asks Foreman'"'"'s guard before every shell command.
+import { execFileSync } from "node:child_process";
+const GUARD = ${JSON.stringify(process.env.GUARD)};
+const LIST = ${JSON.stringify(process.env.LIST)};
+export default function (pi) {
+  pi.on("tool_call", async (event) => {
+    if (event.toolName !== "bash") return undefined;
+    try {
+      execFileSync(GUARD, [LIST, "--command"], { input: String(event.input?.command ?? ""), stdio: ["pipe", "ignore", "pipe"] });
+      return undefined;
+    } catch (e) {
+      const why = String(e?.stderr ?? "").trim() || "Blocked by Foreman: the guard could not run, so the command was not run. Tell the owner.";
+      return { block: true, reason: why };
+    }
+  });
+}
+`);' "$dir/foreman-guard.ts" || die "could not write the pi extension for seat $id"
+  done < <(members)
+}
+
+# The JSON edit shared by claude-code and codex: one PreToolUse entry that runs the guard, and
+# nothing else of ours. Entries that are not ours are left as they are.
+BAN_EDIT='
+  const ours = (g) => (g.hooks || []).some((h) => typeof h.command === "string" && h.command.includes("foreman-guard"));
+  j.hooks = j.hooks || {};
+  const pre = (j.hooks.PreToolUse || []).filter((g) => !ours(g));
+  if (env.OFF !== "1") pre.push({matcher: env.MATCH, hooks: [{type: "command", command: env.HOOK, timeout: 10}]});
+  if (pre.length) j.hooks.PreToolUse = pre; else delete j.hooks.PreToolUse;
+  if (!Object.keys(j.hooks).length) delete j.hooks;
+  return Object.keys(j).length ? j : null;'
+
+cmd_bans() {
+  local off=0 arg project="" id rt md
+  for arg in "$@"; do
+    case "$arg" in --off) off=1 ;; -*) die "unknown option: $arg" ;; *) [ -z "$project" ] || die "bans takes one project path"; project="$arg" ;; esac
+  done
+  resolve "$project"; require_rig_file
+  hygiene >/dev/null
+  install_bans "$off"
+  if [ "$off" -eq 1 ]; then say "the command guard is off for $RIG_NAME. Restart the crew for running seats to drop it."; return; fi
+  say "banned for $RIG_NAME (built-in bans plus banned_cmds; background processes too):"
+  jq -r '.bans[] | "  " + .text + (if .unless then "   (unless the command has: " + (.unless | join(" ")) + ")" else "" end)' "$PROJECT/.foreman/bans.json"
+  say ""
+  while read -r id rt md; do
+    case "$rt" in
+      claude-code) say "seat $id (claude-code): refused by a hook in .claude/settings.local.json" ;;
+      codex) say "seat $id (codex): refused by a hook in .codex/hooks.json, ONCE YOU TRUST IT: open the seat, type /hooks, and trust the Foreman guard. Until then codex ignores it." ;;
+      pi) say "seat $id (pi): refused by an extension in the seat's own agent folder" ;;
+      *) say "seat $id ($rt): NOT covered; Foreman has no guard for this runtime" ;;
+    esac
+  done < <(members)
+  say ""
+  say "Restart the crew so every seat loads it: scripts/foreman down $PROJECT && scripts/foreman up $PROJECT"
+}
+
 # --- retro and the lessons ledger -----------------------------------------------------------
 # After each job a seat reads the job's ledger and logs up to three lessons: habits it saw, good
 # or bad, each tied to the file that shows it. This only logs. No rule, prompt or code changes
@@ -682,6 +790,7 @@ case "$cmd" in
   down)  cmd_down "$@" ;;
   tracing) cmd_tracing "$@" ;;
   unstick) cmd_unstick "$@" ;;
+  bans) cmd_bans "$@" ;;
   retro) cmd_retro "$@" ;;
   lesson) cmd_lesson "$@" ;;
   habits) cmd_habits "$@" ;;
