@@ -30,4 +30,21 @@ cp -R "$ROOT/golden" "$T/golden"; mkdir -p "$T/scripts"; cp "$ROOT"/scripts/* "$
 jq '.expect.caught_by = ["suite"]' "$ROOT/golden/tasks/noop-fix/task.json" > "$T/golden/tasks/noop-fix/task.json"
 "$T/scripts/golden" noop-fix >"$T/broken.txt" 2>&1; rc=$?
 [ "$rc" -ne 0 ] && grep -q 'not as expected: noop-fix' "$T/broken.txt" && ok "a task that comes out differently fails the run and is named" || bad "a task that comes out differently fails the run and is named" "$(cat "$T/broken.txt")"
+# A gate that crashes before it records anything must not be counted as a catch. The task's
+# expectation is left alone; the gate itself is broken in a scratch copy.
+rm -rf "$T/scripts" "$T/qa" "$T/golden"; mkdir -p "$T/scripts"; cp "$ROOT"/scripts/* "$T/scripts/"; cp -R "$ROOT/qa" "$T/qa"; cp -R "$ROOT/golden" "$T/golden"
+sed -i 's/^gate_green() {$/gate_green() { return 1/' "$T/scripts/qa"
+"$T/scripts/golden" --json "$T/broken.json" noop-fix >"$T/brokengate.txt" 2>&1; rc=$?
+[ "$rc" -ne 0 ] && grep -q 'BROKEN: gate green gave no result' "$T/brokengate.txt" && [ "$(jq -r '.[0].caught_by' "$T/broken.json")" = "" ] \
+  && ok "a gate that stops without recording a result is reported broken, not credited with a catch" || bad "a gate that stops without recording a result is reported broken, not credited with a catch" "$(cat "$T/brokengate.txt")"
+# Asked for the screener and it cannot answer: the run is not as expected.
+mkdir -p "$T/bin"; printf '#!/bin/sh\ncat >/dev/null\nwhile [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; esac; shift; done\necho "{}" > "$out"; printf 503\n' > "$T/bin/curl"; chmod +x "$T/bin/curl"
+PATH="$T/bin:$PATH" OPENROUTER_API_KEY=sk-test "$ROOT/scripts/golden" --screener rule-broken secret-added >"$T/noscreen.txt" 2>&1; rc=$?
+[ "$rc" -ne 0 ] && grep -q 'screener did not answer' "$T/noscreen.txt" && ok "asked for the screener and it does not answer: the run fails" || bad "asked for the screener and it does not answer: the run fails" "$(cat "$T/noscreen.txt")"
+# The screener sends a job back but the QA gate that should also catch it is broken: still a failure.
+printf '#!/bin/sh\ncat >/dev/null\nwhile [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; esac; shift; done\necho "{\\"answers\\":{\\"item_0\\":{\\"type\\":\\"noul\\",\\"noul\\":0.9},\\"item_1\\":{\\"type\\":\\"noul\\",\\"noul\\":0.02}}}" > "$out"; printf 200\n' > "$T/bin/curl"
+cp "$ROOT/scripts/qa" "$T/scripts/qa"; sed -i 's/^gate_probe() {$/gate_probe() { record "$1" probe pass "forced"; return 0/' "$T/scripts/qa"
+PATH="$T/bin:$PATH" OPENROUTER_API_KEY=sk-test "$T/scripts/golden" --screener --json "$T/sb.json" untouched-item >"$T/sb.txt" 2>&1; rc=$?
+[ "$rc" -ne 0 ] && [ "$(jq -r '.[0] | (.screener_as_expected | tostring) + " " + (.qa_as_expected | tostring)' "$T/sb.json")" = "true false" ] \
+  && ok "a screener send-back does not hide a QA gate that stopped catching the defect" || bad "a screener send-back does not hide a QA gate that stopped catching the defect" "$(cat "$T/sb.txt")"
 echo; echo "$pass passed, $failn failed"; [ "$failn" -eq 0 ]

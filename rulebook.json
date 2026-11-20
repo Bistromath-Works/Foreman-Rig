@@ -1,5 +1,5 @@
 {
-  "about": "The rulebook: every instruction file a seat is given. A rule change replaces or merges with an old rule; the rulebook as a whole may not grow past max_lines. Raise max_lines only by a decision of the human, recorded in the Decisions log.",
+  "about": "The rulebook: the culture files and the role file of every seat. (The shared skills a seat is also given, listed in agents/shared/agent.yaml, are not part of it and are not capped.) A rule change replaces or merges with an old rule; the rulebook as a whole may not grow past max_lines. Raise max_lines only by a decision of the human, recorded in the Decisions log.",
   "max_lines": 508,
   "files": [
     "CULTURE.md",

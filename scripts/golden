@@ -82,24 +82,36 @@ play() {
   done
   "$QA" verdict "$id" >/dev/null 2>&1 || true
   verdict="$(jq -r .verdict "$run/verdict.json")"; gate="$(jq -r '.gate // ""' "$run/verdict.json")"
-  if [ "$screen" = "send back" ]; then by=screener; elif [ "$verdict" != pass ]; then by="$gate"; else by=""; fi
 
-  jq -cn --arg n "$name" --arg sc "$screen" --arg v "$verdict" --arg g "$gate" --arg by "$by" --slurpfile t "$t/task.json" --argjson items "${items:-[]}" --argjson flags "${flags:-{\}}" \
+  # The QA rig and the screener are judged apart, so one cannot hide the other:
+  #   - a defect counts as caught by a gate only if that gate recorded a result that is not a pass
+  #     (a gate that crashed before recording is a broken gate, not a catch)
+  #   - the QA verdict must be the expected one whether or not the screener also sent the job back
+  #   - when the screener was asked and did not answer, the task is not as expected
+  jq -cn --arg n "$name" --arg sc "$screen" --arg v "$verdict" --arg g "$gate" --slurpfile t "$t/task.json" --argjson items "${items:-[]}" --argjson flags "${flags:-{\}}" \
+        --argjson notrun "$(jq -c '.gate_not_run // false' "$run/verdict.json")" \
         --argjson gates "$(for g in "${GATES[@]}"; do [ -f "$run/gates/$g.json" ] && jq -c '{(.gate): {status, note}}' "$run/gates/$g.json"; done | jq -cs 'add // {}')" '
     $t[0] as $t
     | ($t.expect.verdict == "pass") as $control
+    | ($v != "pass" and ($notrun | not) and ($gates[$g] != null) and (($gates[$g].status == "pass" or $gates[$g].status == "skip") | not)) as $qa_caught
+    | ($v != "pass" and ($qa_caught | not)) as $qa_broken
+    | ($t.expect.caught_by - ["screener"]) as $want_gates
+    | (if $control then $v == "pass" elif $qa_broken then false else ($v == $t.expect.verdict and ($want_gates | index($g)) != null) end) as $qa_ok
+    | ($sc != "not asked") as $asked
+    | ([$flags.rules_flagged[]?.id] | sort) as $flagged
+    | (if ($asked | not) then null elif ($sc == "skipped" or $sc == "error") then false else $flagged == (($t.expect.flags // []) | sort) end) as $flags_ok
+    | (if ($asked | not) then true elif ($sc == "skipped" or $sc == "error") then false
+       else ($flags_ok and (if ($t.expect.caught_by | index("screener")) != null then $sc == "send back" else $sc != "send back" end)) end) as $screener_ok
+    | (if $sc == "send back" then "screener" elif $qa_caught then $g else "" end) as $by
     | {task:$n, defect:$t.defect, screener:$sc, screener_items:$items, screener_flags:$flags, verdict:$v, stopped_at:$g, caught_by:$by, gates:$gates,
-       expected:$t.expect,
-       flagged:([$flags.rules_flagged[]?.id] | sort),
-       flags_as_expected:(if $sc == "not asked" or $sc == "skipped" or $sc == "error" then null
-                          else ([$flags.rules_flagged[]?.id] | sort) == (($t.expect.flags // []) | sort) end),
-       outcome:(if $control then (if $by == "" then "passed, as it should" else "false alarm" end)
-                elif $by == "" then "missed"
-                elif ($t.expect.caught_by | index($by)) != null then "caught"
-                else "caught elsewhere" end),
-       as_expected:(if $control then $by == ""
-                    else ($t.expect.caught_by | index($by)) != null and ($sc == "send back" or $v == $t.expect.verdict) end)}
-    | .as_expected = (.as_expected and (.flags_as_expected != false))' >>"$records"
+       expected:$t.expect, flagged:$flagged, flags_as_expected:$flags_ok, qa_as_expected:$qa_ok, screener_as_expected:$screener_ok,
+       outcome:((if $qa_broken then "BROKEN: gate \($g) gave no result"
+                 elif $control then (if $by == "" then "passed, as it should" else "false alarm" end)
+                 elif $by == "" then "missed"
+                 elif ($t.expect.caught_by | index($by)) != null then "caught"
+                 else "caught elsewhere" end)
+                + (if $asked and ($sc == "skipped" or $sc == "error") then "; screener did not answer" else "" end)),
+       as_expected:($qa_ok and $screener_ok)}' >>"$records"
 }
 
 for n in "${names[@]}"; do play "$n"; done

@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Fixes from the review of the 2026-11-20 work (CF-22).** No high-severity findings; the
+  medium ones are fixed, each with a test.
+  - Command guard: sees through git's options (`git -C app push`), redirects (`git push>log`)
+    and `git remote rm`; the "without" form checks whole arguments of the same command; an `&`
+    inside quotes is no longer taken for a background process, and `sleep 1&echo` is.
+    Updating the guard keeps other hooks in the same group, and `bans --off` cleans up after a
+    crew that changed runtime.
+  - QA gates: a moved submodule pin is seen by the rules gate and the mutation gate even when
+    the repo tells git to ignore submodules; a base named by branch is found when the source
+    repo sits on another branch.
+  - Screener: an unusable answer also goes to the fallback; the hunk splitter no longer drops
+    removed lines that look like headers; one bad optional answer no longer erases the other
+    flags; a risk outside 0 to 3 is dropped; an override that cannot be logged still queues.
+  - Retro: screener rows are counted once per job and only for this project. The count of QA
+    contracts is now called `qa_contracts`. Evidence that is a link out of the job folder is
+    refused.
+  - Audit: exactly one JSON object is accepted; any job not in the ledger rejects the
+    proposal; growth is measured on the file after the change; more key formats are caught and
+    ordinary sentences with "token:" are not; records never share a name.
+  - Golden runner: a gate that crashes before recording is reported broken, not credited; the
+    QA result and the screener result are judged apart; a screener that does not answer fails
+    the run.
+
 - **A seat that needs a person no longer stops the launch half way (CF-21).** When OpenRig
   reports a seat waiting at start, `scripts/foreman up` still starts the unstick watcher. For a
   Codex seat waiting to trust a hook it prints the three steps to take.

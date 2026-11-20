@@ -38,14 +38,26 @@ fi
 # digit or _ before it, and followed by the end, a space, or a shell separator.
 read -r -d '' MATCH <<'JQ' || true
 def esc: gsub("(?<c>[\\\\^$.|?*+()\\[\\]{}])"; "\\\\\(.c)");
-($cmd | gsub("\\s+"; " ")) as $c
-| def has($t): $c | test("(^|[^A-Za-z0-9_])" + ($t | esc) + "($|[\\s;|&)\"'`=])");
+# The command as typed, with runs of spaces squeezed, and a second copy in which git's own
+# options before the subcommand are dropped, so "git -C app push" reads as "git push".
+($cmd | gsub("\\s+"; " ")) as $raw
+| ($raw | gsub("(?<g>(^|[^A-Za-z0-9_])git)(?<o>( (-C|-c|--git-dir|--work-tree|--namespace|--exec-path) [^ ]+| --(git-dir|work-tree|namespace|exec-path)=[^ ]+| (--no-pager|--paginate|-p|-P|--bare|--no-replace-objects|--literal-pathspecs|--no-optional-locks))+)"; "\(.g)")) as $plain
+# For the background check only: quoted text is blanked, so "&" inside a string is not an
+# operator. A shell handed its script with -c keeps the script, quotes and all.
+| (if ($raw | test("(^|[^A-Za-z0-9_])(bash|sh|zsh|dash) (-[a-z]+ )*-[a-z]*c( |$)")) then $raw
+   else ($raw | gsub("'[^']*'"; "''") | gsub("\"(\\\\.|[^\"\\\\])*\""; "\"\"")) end) as $bare
+| def has($c; $t): $c | test("(^|[^A-Za-z0-9_])" + ($t | esc) + "($|[\\s;|&<>)\"'`=])");
+# The words of the one command that holds the banned text: the piece between ; | & and newlines.
+def words($t): [$plain | splits("[;|&\\n]+") | select(has(.; $t))] | (.[0] // "") | [splits(" +")] ;
 first(
-  ($b[0].bans[] | select(has(.text))
-    | select((.unless // []) as $u | ($u | length) == 0 or ($u | all(. as $w | $c | contains($w)) | not))
+  ($b[0].bans[] | select(has($raw; .text) or has($plain; .text))
+    | . as $ban
+    | select(($ban.unless // []) as $u | ($u | length) == 0 or ((words($ban.text)) as $w | $u | all(. as $x | $w | index($x)) | not))
     | "`\(.text)`\(if (.unless // []) | length > 0 then " without " + (.unless | join(" ")) else "" end) is banned (\(.source))"),
   (select($b[0].background != false)
-    | select($bg == "true" or ($c | test("(^|[^A-Za-z0-9_])(nohup|setsid|disown)($|\\s)")) or ($c | test("(^|[^&>])&(\\s*$|\\s+[^&\\s]|\\s*[;)])")))
+    | select($bg == "true"
+        or ($bare | test("(^|[^A-Za-z0-9_])(nohup|setsid|disown)($|[\\s<>&;])"))
+        or ($bare | test("(^|[^&>|<])&($|[^&>])")))
     | "background processes are banned (built-in)")
 ) // empty
 JQ

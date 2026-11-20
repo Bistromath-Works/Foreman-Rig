@@ -576,7 +576,7 @@ hygiene() {
 #   pi           an extension in each pi seat's own agent folder
 # A banned command is then refused before it runs, whatever the seat's prompt says.
 
-BUILTIN_BANS=("git push" "git remote add" "git remote set-url" "git remote remove" "git remote rename" "gh")
+BUILTIN_BANS=("git push" "git remote add" "git remote set-url" "git remote remove" "git remote rm" "git remote rename" "gh")
 
 # Write the ban list. A banned_cmds entry is plain text, or "text (without word word)": banned
 # unless the command also has every one of those words.
@@ -604,14 +604,20 @@ install_bans() {
   if [ "$off" -eq 0 ]; then PROJECT_DIR="$PROJECT" write_bans; else rm -f "$list"; fi
   hook="$(printf '%q %q' "$guard" "$list")"
   runtimes="$(members | awk '{print $2}' | sort -u)"
-  case "$runtimes" in *claude-code*)
-    mkdir -p "$PROJECT/.claude"
-    FILE="$PROJECT/.claude/settings.local.json" HOOK="$hook" OFF="$off" MATCH="Bash" json_edit "$BAN_EDIT" ;;
-  esac
-  case "$runtimes" in *codex*)
-    mkdir -p "$PROJECT/.codex"
-    FILE="$PROJECT/.codex/hooks.json" HOOK="$hook" OFF="$off" MATCH="^Bash$" json_edit "$BAN_EDIT" ;;
-  esac
+  # Turning the guard off cleans both files whatever the crew runs on now: a seat that changed
+  # runtime must not be left with a hook pointing at a ban list that is gone.
+  if [ "$off" -eq 1 ] || [[ "$runtimes" == *claude-code* ]]; then
+    if [ "$off" -eq 0 ] || [ -f "$PROJECT/.claude/settings.local.json" ]; then
+      mkdir -p "$PROJECT/.claude"
+      FILE="$PROJECT/.claude/settings.local.json" HOOK="$hook" OFF="$off" MATCH="Bash" json_edit "$BAN_EDIT"
+    fi
+  fi
+  if [ "$off" -eq 1 ] || [[ "$runtimes" == *codex* ]]; then
+    if [ "$off" -eq 0 ] || [ -f "$PROJECT/.codex/hooks.json" ]; then
+      mkdir -p "$PROJECT/.codex"
+      FILE="$PROJECT/.codex/hooks.json" HOOK="$hook" OFF="$off" MATCH="^Bash$" json_edit "$BAN_EDIT"
+    fi
+  fi
   while read -r id rt md; do
     [ "$rt" = pi ] || continue
     dir="${OPENRIG_HOME:-$HOME/.openrig}/state/pi/crew-$id@$RIG_NAME/agent/extensions"
@@ -642,9 +648,12 @@ export default function (pi) {
 # The JSON edit shared by claude-code and codex: one PreToolUse entry that runs the guard, and
 # nothing else of ours. Entries that are not ours are left as they are.
 BAN_EDIT='
-  const ours = (g) => (g.hooks || []).some((h) => typeof h.command === "string" && h.command.includes("foreman-guard"));
+  const ours = (h) => typeof h.command === "string" && h.command.includes("foreman-guard");
   j.hooks = j.hooks || {};
-  const pre = (j.hooks.PreToolUse || []).filter((g) => !ours(g));
+  // Drop only our own hook. A group that held other hooks beside it keeps them.
+  const pre = (j.hooks.PreToolUse || [])
+    .map((g) => Object.assign({}, g, {hooks: (g.hooks || []).filter((h) => !ours(h))}))
+    .filter((g) => g.hooks.length);
   if (env.OFF !== "1") pre.push({matcher: env.MATCH, hooks: [{type: "command", command: env.HOOK, timeout: 10}]});
   if (pre.length) j.hooks.PreToolUse = pre; else delete j.hooks.PreToolUse;
   if (!Object.keys(j.hooks).length) delete j.hooks;
@@ -705,6 +714,10 @@ job_numbers() {
       done) coder=$((coder+1)) ;; stuck) coder=$((coder+1)); stuck=$((stuck+1)) ;;
     esac
   done
+  # QA contracts the owner wrote for this job. A contract may never have been sent (a refused
+  # send leaves the file behind), so this counts contracts, not sends.
+  local issues=() seen=" " slug
+  slug="$(basename "$PROJECT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-\n' '-')"
   for f in "$JOB_DIR"/ctx/qa-r*.json; do
     [ -f "$f" ] && jq -e . "$f" >/dev/null 2>&1 || continue
     qa_sent=$((qa_sent+1)); issue="$(jq -r '.issue // ""' "$f")"; cand="$(jq -r '.candidate // ""' "$f")"
@@ -713,14 +726,17 @@ job_numbers() {
       [ "$(jq -r '.issue + " " + .candidate' "$d/contract.json")" = "$issue $cand" ] || continue
       v="$(jq -r '.verdict + (if .gate then " at " + .gate else "" end)' "$d/verdict.json")"; verdicts+=("$v")
     done
-    if [ -f "$qa_home/screener/log.jsonl" ]; then
-      sb=$((sb + $(jq -c --arg i "$issue" 'select(.issue == $i and .decision == "send_back")' "$qa_home/screener/log.jsonl" 2>/dev/null | wc -l)))
-      ov=$((ov + $(jq -c --arg i "$issue" 'select(.issue == $i and .decision == "overridden")' "$qa_home/screener/log.jsonl" 2>/dev/null | wc -l)))
-    fi
+    case "$seen" in *" $issue "*) ;; *) seen="$seen$issue "; [ -z "$issue" ] || issues+=("$issue") ;; esac
   done
+  # Screener rows are counted once per job, however many QA rounds it had: each row whose issue
+  # is one of this job's and whose repo is this project.
+  if [ -f "$qa_home/screener/log.jsonl" ] && [ "${#issues[@]}" -gt 0 ]; then
+    sb="$(jq -c --arg r "$slug" --args 'select(.repo == $r and .decision == "send_back" and (.issue as $i | $ARGS.positional | index($i)))' "${issues[@]}" <"$qa_home/screener/log.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
+    ov="$(jq -c --arg r "$slug" --args 'select(.repo == $r and .decision == "overridden" and (.issue as $i | $ARGS.positional | index($i)))' "${issues[@]}" <"$qa_home/screener/log.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
+  fi
   jq -cn --argjson b "$blocks" --argjson p "$passes" --argjson c "$coder" --argjson s "$stuck" --argjson q "$qa_sent" \
         --argjson sb "$sb" --argjson ov "$ov" --args '{checker_blocks:$b, checker_passes:$p, coder_tasks:$c, coder_stuck:$s,
-          qa_sends:$q, qa_verdicts:$ARGS.positional, screener_send_backs:$sb, screener_overruled:$ov}' "${verdicts[@]}"
+          qa_contracts:$q, qa_verdicts:$ARGS.positional, screener_send_backs:$sb, screener_overruled:$ov}' "${verdicts[@]}"
 }
 
 cmd_retro() {
@@ -774,7 +790,7 @@ cmd_lesson() {
   [ "${#text}" -ge 20 ] && [ "${#text}" -le 240 ] || die "a lesson is 20 to 240 characters (this one is ${#text})"
   case "$ev" in /*) evp="$ev" ;; *) evp="$JOB_DIR/$ev" ;; esac
   [ -f "$evp" ] || die "evidence file not found: $evp"
-  evp="$(cd "$(dirname "$evp")" && pwd -P)/$(basename "$evp")"
+  evp="$(realpath -e -- "$evp")"   # links resolved all the way, so a link out of the job folder is refused
   case "$evp" in "$(cd "$JOB_DIR" && pwd -P)"/*) ;; *) die "the evidence file must be inside the job folder $JOB_DIR" ;; esac
   touch "$LEDGER"
   count="$(jq -c --arg j "$JOB" 'select(.job == $j)' "$LEDGER" | wc -l)"

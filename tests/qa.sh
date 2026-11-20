@@ -681,6 +681,65 @@ for v in '[]' '[""]' '"one"' '[1]'; do
 done
 cp "$T/keep.json" "$QA_REPOS/fixture.json"
 
+echo "# CF-22 review fixes"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"
+# A repo that tells git to ignore its submodules: a moved pin is still a change the rules see.
+git -C "$R" checkout -q -b sbase "$BASE"
+printf '[submodule "vendor/lib"]\n\tpath = vendor/lib\n\turl = ./nowhere\n\tignore = all\n' > "$R/.gitmodules"
+git -C "$R" add .gitmodules; git -C "$R" update-index --add --cacheinfo "160000,$BASE,vendor/lib"; git -C "$R" commit -qm sbase; SBASE="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q -b spin
+printf 'def full_name(first, middle, last):\n    return " ".join(p for p in (first, middle, last) if p)\n' > "$R/name.py"
+printf '%s\n' "$repro" > "$R/tests/test_empty_middle.py"; git -C "$R" add name.py tests
+git -C "$R" update-index --cacheinfo "160000,$(git -C "$R" rev-parse good),vendor/lib"; git -C "$R" commit -qm spin; git -C "$R" checkout -q -f main
+jq --arg b "$SBASE" '.base = $b' "$(contract spin)" > "$T/spin.json"
+jq '.protected_paths = ["vendor/"]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$T/spin.json")"; same "a moved submodule pin under a protected path fails the rules gate" "$(jq -r .status "$QA_HOME/runs/$id/gates/rules.json")" "fail"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+id="$(new "$T/spin.json")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+tr '\0' '\n' < "$QA_HOME/runs/$id/fix-files" | grep -qx 'vendor/lib' && ok "a moved submodule pin is part of the fix that gets reversed" || bad "a moved submodule pin is part of the fix that gets reversed" "$(tr '\0' ' ' < "$QA_HOME/runs/$id/fix-files")"
+"$QA" verdict "$id" >/dev/null 2>&1
+# The source repo is sitting on the candidate branch; the base is named by branch.
+git -C "$R" checkout -q good
+jq '.base = "main"' "$(contract good)" > "$T/bybranch.json"
+out="$("$QA" new "$T/bybranch.json" 2>&1)" && ok "a base named by branch is found when the source repo sits on another branch" || bad "a base named by branch is found when the source repo sits on another branch" "$out"
+git -C "$R" checkout -q main
+
+# screener
+jq '.screener = "openrouter"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+flagged 0.93 2.6
+jq '.answers.rule_1 = "unavailable" | .answers.hunk_1 = {type:"score", score:20}' "$T/curl/answer.json" > "$T/a2.json" && mv "$T/a2.json" "$T/curl/answer.json"
+out="$(send "$c2")"; same "one unusable optional answer does not erase the others, and an impossible risk is dropped" "$(last_log '[(.flags.rules_flagged | map(.id) | join(",")), (.flags.riskiest | length), ([.flags.riskiest[].risk] | max)] | map(tostring) | join(" ")')" "no-secrets 1 2.6"
+[[ "$out" != *"risk 20"* ]] && ok "an out-of-range risk is never shown" || bad "an out-of-range risk is never shown" "$out"
+# an HTTP 200 whose answer cannot be used also goes to the fallback, which has its own threshold
+jq -n '{"typesafe/jev-1.14":{untouched_below:0.3,rule_broken_at:0.7}, "liquid/d1.2-ultra":{untouched_below:0.6,rule_broken_at:0.7}}' > "$T/thr.json"
+cat > "$T/bin/curl" <<'SH'
+#!/bin/sh
+out=""; body=""
+echo "$@" > "$CURL_DIR/argv"; cat > "$CURL_DIR/config"
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; --data-binary) body="${2#@}"; shift ;; esac; shift; done
+cp "$body" "$CURL_DIR/body.json"; jq -r .model "$body" >> "$CURL_DIR/models"
+if [ "$(jq -r .model "$body")" = "liquid/d1.2-ultra" ]; then cat "$CURL_DIR/answer.json" > "$out"; else echo '{"answers":{}}' > "$out"; fi
+printf 200
+SH
+jq '.screener = "openrouter" | .screener_fallback = "liquid/d1.2-ultra"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+echo 200 > "$T/curl/status"; jq -n '{answers:{item_0:{type:"noul",noul:0.9}, item_1:{type:"noul",noul:0.45}}}' > "$T/curl/answer.json"; : > "$T/curl/models"; n="$(queued)"
+out="$(SCREEN_THRESHOLDS="$T/thr.json" send "$c2")"
+same "an unusable answer from the first model goes to the fallback, judged by the fallback's own threshold" "$(queued) $(tr '\n' ' ' < "$T/curl/models")$(last_log '.decision + " " + .model + " " + (.threshold | tostring)')" "$n typesafe/jev-1.14 liquid/d1.2-ultra send_back liquid/d1.2-ultra 0.6"
+# the hunk splitter: a removed line that starts with "-- ", a deleted file, a name with a space
+git -C "$R" checkout -q -b hbase "$BASE"; printf -- '-- an old comment\nselect 1;\n' > "$R/q.sql"; echo gone > "$R/gone.txt"; echo x > "$R/y space.txt"
+git -C "$R" add -A; git -C "$R" commit -qm hbase; HBASE="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q -b hcand; printf 'select 1;\n' > "$R/q.sql"; git -C "$R" rm -q gone.txt; echo y > "$R/y space.txt"; git -C "$R" add -A; git -C "$R" commit -qm hcand; git -C "$R" checkout -q main
+jq --arg b "$HBASE" '.base = $b | .candidate = "hcand" | .done_items = ["Tidy the sample files."]' "$(contract good)" > "$T/h.json"
+jq '.screener = "openrouter"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+out="$(send "$T/h.json")"
+same "hunks keep a removed line that looks like a header, name a deleted file by its old name, and drop git's tab" "$(jq -r '[.state.hunks[] | .file] | sort | join("|")' "$T/curl/body.json") $(jq -r '[.state.hunks[] | select(.file == "q.sql") | .text | test("--- an old comment")] | join(",")' "$T/curl/body.json")" "gone.txt|q.sql|y space.txt true"
+# overruling the screener still queues when its log cannot be written
+mkdir -p "$QA_HOME/screener"; rm -f "$QA_HOME/screener/log.jsonl"; mkdir "$QA_HOME/screener/log.jsonl"; n="$(queued)"
+out="$(send "$c2" --no-screen "checked by hand")"; same "an override that cannot be logged still sends the job to QA" "$(queued)" "$((n+1))"
+rmdir "$QA_HOME/screener/log.jsonl"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+
 echo
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]

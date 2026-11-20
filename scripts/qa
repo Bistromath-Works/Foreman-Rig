@@ -292,10 +292,11 @@ fix_files() {
   [ -z "$chk" ] || skip["$chk"]=1
   mapfile -t tests < <(jq -r '.test_paths[]? // empty | select(length > 0)' "$run/repo.json")
   if [ "${#tests[@]}" -gt 0 ]; then
-    g -C "$run/src/repo" diff -z --no-renames --name-only "$base" HEAD -- "${tests[@]}" >"$run/test-files" || return 1
+    g -C "$run/src/repo" diff -z --no-renames --ignore-submodules=none --name-only "$base" HEAD -- "${tests[@]}" >"$run/test-files" || return 1
     while IFS= read -r -d '' f; do skip["$f"]=1; done <"$run/test-files"
   fi
-  g -C "$run/src/repo" diff -z --no-renames --name-only "$base" HEAD >"$run/changed-files" || return 1
+  # --ignore-submodules=none: a repo may tell git to ignore its submodules; a moved pin is still a change.
+  g -C "$run/src/repo" diff -z --no-renames --ignore-submodules=none --name-only "$base" HEAD >"$run/changed-files" || return 1
   while IFS= read -r -d '' f; do [ -n "${skip[$f]:-}" ] || printf '%s\0' "$f"; done <"$run/changed-files"
 }
 
@@ -336,7 +337,10 @@ cmd_new() {
   g -C "$run/src/repo" checkout --quiet --detach "$(jq -r .candidate "$c")" 2>/dev/null \
     || g -C "$run/src/repo" checkout --quiet --detach "origin/$(jq -r .candidate "$c")" 2>/dev/null \
     || die "candidate $(jq -r .candidate "$c") not found in $repo"
-  g -C "$run/src/repo" rev-parse "$(jq -r .base "$c")^{commit}" >"$run/base.sha" 2>/dev/null \
+  # A base named by branch may exist only as origin/<name> in the clone (the source repo was
+  # sitting on another branch), so try that too, as for the candidate above.
+  g -C "$run/src/repo" rev-parse --verify -q "$(jq -r .base "$c")^{commit}" >"$run/base.sha" 2>/dev/null \
+    || g -C "$run/src/repo" rev-parse --verify -q "origin/$(jq -r .base "$c")^{commit}" >"$run/base.sha" 2>/dev/null \
     || die "base $(jq -r .base "$c") not found in $repo"
   g -C "$run/src/repo" rev-parse HEAD >"$run/candidate.sha"
   # Read-only from here: drop the remote so nothing can be pushed back.
@@ -394,11 +398,11 @@ gate_rules() {
   fi
   : >"$run/logs/rules.log"
   if [ "${#prot[@]}" -gt 0 ]; then
-    g -C "$run/src/repo" diff --no-renames --name-status "$base" HEAD -- "${prot[@]}" | sed 's/^/protected\t/' >>"$run/logs/rules.log" \
+    g -C "$run/src/repo" diff --no-renames --ignore-submodules=none --name-status "$base" HEAD -- "${prot[@]}" | sed 's/^/protected\t/' >>"$run/logs/rules.log" \
       || { record "$run" rules fail "could not compare the candidate with base for protected_paths"; return; }
   fi
   if [ "${#add[@]}" -gt 0 ]; then
-    g -C "$run/src/repo" diff --no-renames --name-status --diff-filter=a "$base" HEAD -- "${add[@]}" | sed 's/^/add-only\t/' >>"$run/logs/rules.log" \
+    g -C "$run/src/repo" diff --no-renames --ignore-submodules=none --name-status --diff-filter=a "$base" HEAD -- "${add[@]}" | sed 's/^/add-only\t/' >>"$run/logs/rules.log" \
       || { record "$run" rules fail "could not compare the candidate with base for add_only_paths"; return; }
   fi
   n="$(wc -l <"$run/logs/rules.log" | tr -d ' ')"
@@ -731,7 +735,8 @@ cmd_send() {
   # when it has no objection, or cannot run, the job goes on to the gates as before.
   if [ "${2:-}" = --no-screen ]; then
     [ -n "${3:-}" ] || die "--no-screen needs a reason: where is the item the screener called untouched?"
-    QA_HOME="$QA_HOME" QA_REPOS="$QA_REPOS" "$ROOT/scripts/screen" override "$c" "$3"
+    QA_HOME="$QA_HOME" QA_REPOS="$QA_REPOS" "$ROOT/scripts/screen" override "$c" "$3" \
+      || say "warning: could not log the screener override; sending to QA anyway"
   elif [ -n "${2:-}" ]; then usage
   else
     local sc=0
@@ -745,7 +750,7 @@ If the screener is wrong, send with the reason: scripts/qa send $c --no-screen \
   f="$QA_HOME/inbox/$(jq -r .issue "$c")-$(date +%Y%m%d-%H%M%S).json"
   cp "$c" "$f"
   # The screener's record travels beside the contract, so its flags reach the verdict.
-  [ ! -f "${SCREEN_OUT:-}" ] || mv "$SCREEN_OUT" "${f%.json}.screen.json"
+  [ ! -f "${SCREEN_OUT:-}" ] || mv "$SCREEN_OUT" "${f%.json}.screen.json" 2>/dev/null || say "warning: could not save the screener's record beside the contract"
   dest="qa-gatekeeper@$QA_RIG"
   rig queue create --destination "$dest" --gate qa --summary "QA $(jq -r .issue "$c"): try to break $(jq -r .candidate "$c")" \
     --body "contract: $f" --source "$(jq -r .reply_to "$c")" >/dev/null \
