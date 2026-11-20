@@ -16,6 +16,8 @@
 #   scripts/qa sweep                   finalize runs whose budget ran out with no verdict
 #   scripts/qa passed <commit>         exit 0 if QA passed exactly that commit
 #
+# Every repo command, and so all candidate code, runs in a sandbox (see boxed below).
+#
 # A gate runs only after every earlier gate passed or was skipped, and runs once: its result
 # file is never overwritten, so a red gate cannot be re-run until it turns green. The verdict
 # reads those files in order; no seat decides it.
@@ -87,14 +89,69 @@ run_dir() {
 # Seconds left in run $1's wall-clock budget (0 or less: spent).
 remaining() { echo $(( $(cat "$1/deadline") - $(date +%s) )); }
 
-# Run shell command $3 in directory $2 for run $1, output to log $4, capped by the budget.
-# Exit status: the command's, or 124 if the budget ran out.
+# Folders from repo setting $2 (sandbox_ro or sandbox_rw) of settings file $1, one per line,
+# with a leading ~/ turned into the home folder.
+box_paths() { jq -r --arg k "$2" '.[$k][]? // empty' "$1" | sed "s|^~/|$HOME/|"; }
+
+# Refuse sandbox settings that would open a hole: paths must be absolute (or start with ~/), and
+# a writable folder may not be /, the home folder, or anything holding or inside the QA home.
+check_box() {
+  local rf="$1" k p
+  for k in sandbox_ro sandbox_rw; do
+    jq -e --arg k "$k" '.[$k] // [] | type == "array" and all(.[]; type == "string")' "$rf" >/dev/null \
+      || die "$rf: $k must be a list of folder paths"
+    while IFS= read -r p; do
+      [[ "$p" == /* && "/$p/" != */../* ]] || die "$rf: $k path must be absolute or start with ~/: $p"
+    done < <(box_paths "$rf" "$k")
+  done
+  while IFS= read -r p; do
+    p="$(realpath -m "$p")"
+    [ "$p" != / ] && [ "$p" != "$(realpath -m "$HOME")" ] || die "$rf: sandbox_rw may not be / or the home folder"
+    case "$(realpath -m "$QA_HOME")/" in "$p"/*) die "$rf: sandbox_rw path $p holds the QA home; gate results would be writable" ;; esac
+    case "$p/" in "$(realpath -m "$QA_HOME")"/*) die "$rf: sandbox_rw path $p is inside the QA home; gate results would be writable" ;; esac
+  done < <(box_paths "$rf" sandbox_rw)
+}
+
+# The sandbox must exist and must work here; without it nothing runs (no unprotected fallback).
+need_box() {
+  need bwrap
+  bwrap --ro-bind / / --unshare-pid true 2>/dev/null \
+    || die "bwrap cannot start a sandbox on this machine (unprivileged user namespaces off?); gates will not run unprotected"
+}
+
+# Run shell command $4 in directory $2 for run $1 inside the sandbox, for at most $3 seconds.
+# Every command from a repo's settings runs here, and so does all candidate code. Inside:
+#   - the whole disk is read-only; the home folder, /tmp and /run are empty scratch space
+#   - writable: the checkout ($2), the run's evidence folder, and the repo's sandbox_rw folders
+#   - readable from home: only the repo's sandbox_ro folders and the QA home's env/ folder
+#   - the run folder (gate results, contract, probe checks, audit note) is read-only
+#   - the environment is cleared (no tokens), and it has its own process list
+# So candidate code cannot write a gate result, reach the source repo, or use the operator's keys.
+# The network is shared unless the repo sets "sandbox_net": false: services on localhost can
+# still be reached (see qa/README.md).
+boxed() {
+  local run="$1" dir="$2" secs="$3" cmd="$4" p a
+  a=(--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run --tmpfs "$HOME"
+     --ro-bind-try /run/systemd/resolve /run/systemd/resolve
+     --ro-bind-try "$QA_HOME/env" "$QA_HOME/env")
+  while IFS= read -r p; do a+=(--ro-bind-try "$p" "$p"); done < <(box_paths "$run/repo.json" sandbox_ro)
+  while IFS= read -r p; do a+=(--bind-try "$p" "$p"); done < <(box_paths "$run/repo.json" sandbox_rw)
+  a+=(--ro-bind "$run" "$run" --bind "$dir" "$dir" --bind "$run/evidence" "$run/evidence"
+      --unshare-pid --unshare-ipc --die-with-parent --new-session --chdir "$dir"
+      --clearenv --setenv PATH "$PATH" --setenv HOME "$HOME" --setenv USER "${USER:-qa}"
+      --setenv LANG "${LANG:-C.UTF-8}" --setenv QA_RUN "$run" --setenv QA_EVIDENCE "$run/evidence")
+  [ "$(jq -r 'if .sandbox_net == false then "off" else "on" end' "$run/repo.json")" = on ] || a+=(--unshare-net)
+  timeout --kill-after=10 "$secs" bwrap "${a[@]}" bash -c "$cmd"
+}
+
+# Run shell command $3 in directory $2 for run $1, sandboxed, output to log $4, capped by the
+# budget. Exit status: the command's, or 124 if the budget ran out.
 run_cmd() {
   local run="$1" dir="$2" cmd="$3" log="$4" left
   left="$(remaining "$run")"
   [ "$left" -gt 0 ] || return 124
   printf '$ %s\n' "$cmd" >>"$log"
-  ( cd "$dir" && QA_RUN="$run" QA_EVIDENCE="$run/evidence" timeout --kill-after=10 "$left" bash -c "$cmd" ) >>"$log" 2>&1
+  boxed "$run" "$dir" "$left" "$cmd" >>"$log" 2>&1
 }
 
 # record <run> <gate> <status> <note> [exit]: write the gate's result file once.
@@ -142,6 +199,7 @@ fix_files() {
 
 cmd_new() {
   local c="${1:-}"; [ -n "$c" ] || usage
+  need_box
   check_contract "$c"
   local repo slug rf id run
   repo="$(jq -r .repo "$c")"; slug="$(repo_slug "$repo")"; rf="$(repo_file "$slug")"
@@ -152,6 +210,7 @@ cmd_new() {
   done
   [ -z "$(jq -r .repro_check "$c")" ] || [ -n "$(rget "$rf" assertion_pattern)" ] \
     || die "$rf has no assertion_pattern; it is required when a contract has a repro check"
+  check_box "$rf"
   local n=1 stem; stem="$(jq -r .issue "$c")-$(date +%Y%m%d-%H%M%S)"; id="$stem"
   mkdir -p "$QA_HOME/runs"
   until mkdir "$QA_HOME/runs/$id" 2>/dev/null; do n=$((n+1)); id="$stem-$n"; done
@@ -439,7 +498,7 @@ cleanup() {
   local run="$1" cmd
   cmd="$(rget "$run/repo.json" teardown_cmd)"
   if [ -n "$cmd" ] && [ -f "$run/booted" ] && [ -d "$run/src/candidate" ]; then
-    ( cd "$run/src/candidate" && QA_RUN="$run" QA_EVIDENCE="$run/evidence" timeout --kill-after=10 300 bash -c "$cmd" ) >>"$run/logs/teardown.log" 2>&1 || say "warning: teardown failed (see $run/logs/teardown.log)"
+    boxed "$run" "$run/src/candidate" 300 "$cmd" >>"$run/logs/teardown.log" 2>&1 || say "warning: teardown failed (see $run/logs/teardown.log)"
   fi
   rm -rf "$run/src"
 }

@@ -77,7 +77,7 @@ cat > "$QA_REPOS/fixture.json" <<'JSON'
   "suite_cmd": "for f in tests/test_*.py; do python3 \"$f\" || exit 1; done",
   "smoke_cmd": "echo smoke > \"$QA_EVIDENCE/smoke.txt\"",
   "mutation_cmd": "",
-  "teardown_cmd": "touch \"$QA_RUN/torn-down\"",
+  "teardown_cmd": "touch \"$QA_EVIDENCE/torn-down\"",
   "test_paths": ["tests/"]
 }
 JSON
@@ -112,7 +112,7 @@ echo "# verdicts"
 id="$(new "$(contract good)")";    same "real fix -> pass"                   "$(full_run "$id" good 'coverage: covered')" "pass -"
 run="$QA_HOME/runs/$id"
 [ -f "$run/evidence/smoke.txt" ] && ok "smoke command wrote evidence" || bad "smoke command wrote evidence"
-[ -f "$run/torn-down" ] && ok "teardown ran after boot" || bad "teardown ran after boot"
+[ -f "$run/evidence/torn-down" ] && ok "teardown ran after boot" || bad "teardown ran after boot"
 [ ! -e "$run/src" ] && ok "clones deleted after the verdict" || bad "clones deleted after the verdict"
 grep -q '^verdict: pass' "$run/verdict.md" && grep -q 'audit | pass' "$run/verdict.md" && ok "verdict.md has the verdict and gate table" || bad "verdict.md has the verdict and gate table"
 id="$(new "$(contract noop)")";    same "fix that does nothing -> fail at green" "$(full_run "$id" good 'coverage: covered')" "fail green"
@@ -166,6 +166,70 @@ id="$(new "$(contract good)")"; good_probe "$QA_HOME/runs/$id"
 out="$("$QA" try "$id" tests/probe/test_only_last.py 2>&1)"; [[ "$out" == *"exit 0"* ]] && ok "prober can try a check" || bad "prober can try a check" "$out"
 [ ! -e "$QA_HOME/runs/$id/gates/probe.json" ] && ok "trying a check records nothing" || bad "trying a check records nothing"
 same "source repo untouched by every run" "$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)" "$SRC_STATE"
+
+echo "# the sandbox"
+# cheat: a real fix whose own code, run by the gates, tries to forge results and reach outside.
+branch cheat
+sed "s|@SRC@|$R|; s|@OUT@|$ROOT|" > name.py <<'PY'
+import os, subprocess
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+def _try(label, fn):
+    try: fn(); return label + ": DONE"
+    except Exception: return label + ": blocked"
+_run, _src = os.environ.get("QA_RUN", ""), "@SRC@"
+_out = [
+    _try("forge a gate result", lambda: open(_run + "/gates/audit.json", "w").write('{"gate":"audit","status":"pass","note":""}')),
+    _try("forge the verdict", lambda: open(_run + "/verdict.json", "w").write('{"verdict":"pass"}')),
+    _try("write the audit note", lambda: open(_run + "/audit.md", "w").write("coverage: covered\n")),
+    _try("write a probe check", lambda: open(_run + "/probe/extra.py", "w").write("pass\n")),
+    _try("write into the source repo", lambda: open(_src + "/pwned", "w").write("x")),
+    _try("push to the source repo", lambda: subprocess.run(["git", "push", _src, "HEAD:refs/heads/pwned"], check=True, capture_output=True)),
+    _try("read a file in the home folder", lambda: open(os.path.expanduser("~/secret")).read()),
+    _try("read the operator's environment", lambda: os.environ["QA_TEST_SECRET"]),
+    _try("write outside the checkout", lambda: open("@OUT@/pwned", "w").write("x")),
+]
+open(os.environ["QA_EVIDENCE"] + "/cheat.txt", "w").write("\n".join(_out) + "\n")
+PY
+printf '%s\n' "$repro" > tests/test_empty_middle.py; commit cheat
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+mkdir -p "$T/fakehome" "$T/allowed"; echo hunter2 > "$T/fakehome/secret"; echo tool > "$T/allowed/tool.txt"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"
+jq --arg a "$T/allowed" '.sandbox_ro = [$a] | .boot_cmd = "python3 -c \"import name\" && cat \($a)/tool.txt && ! touch \($a)/x"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(HOME="$T/fakehome" QA_TEST_SECRET=hunter2 new "$(contract cheat)")"; run="$QA_HOME/runs/$id"
+HOME="$T/fakehome" QA_TEST_SECRET=hunter2 "$QA" gate "$id" boot >/dev/null 2>&1
+same "a sandbox_ro folder is readable and not writable" "$(jq -r .status "$run/gates/boot.json" 2>/dev/null)" "pass"
+if [ -f "$run/evidence/cheat.txt" ]; then
+  while IFS= read -r line; do
+    [[ "$line" == *": blocked" ]] && ok "candidate code cannot ${line%%:*}" || bad "candidate code cannot ${line%%:*}" "$line"
+  done < "$run/evidence/cheat.txt"
+  same "every cheat was tried" "$(wc -l < "$run/evidence/cheat.txt" | tr -d ' ')" "9"
+else bad "cheat candidate ran and reported"; fi
+[ ! -e "$run/gates/audit.json" ] && [ ! -e "$run/verdict.json" ] && [ ! -e "$run/audit.md" ] && ok "no forged result files in the run" || bad "no forged result files in the run"
+[ ! -e "$R/pwned" ] && ! git -C "$R" rev-parse -q --verify refs/heads/pwned >/dev/null && [ ! -e "$ROOT/pwned" ] && ok "source repo and the folders outside got nothing" || bad "source repo and the folders outside got nothing"
+rm -f "$R/pwned" "$ROOT/pwned"; git -C "$R" update-ref -d refs/heads/pwned 2>/dev/null
+HOME="$T/fakehome" QA_TEST_SECRET=hunter2 full_run "$id" good 'coverage: covered' >/dev/null
+# full_run re-ran boot (refused: already ran) and went on; the honest gates still decide.
+same "the cheating candidate still gets an honest verdict" "$(jq -r '.verdict + " " + (.gate // "-")' "$run/verdict.json")" "pass -"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+for v in '["/"]' "[\"$QA_HOME/runs\"]" "[\"$T\"]" '["relative/path"]' '"not-a-list"'; do
+  jq --argjson v "$v" '.sandbox_rw = $v' "$T/keep.json" > "$QA_REPOS/fixture.json"
+  out="$("$QA" new "$(contract good)" 2>&1)" && bad "refuses sandbox_rw $v" "$out" || ok "refuses sandbox_rw $v"
+done
+net_cmd='python3 -c "import name, socket; socket.create_connection((\"127.0.0.1\", $PORT), 2)"'
+python3 -c 'import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); print(s.getsockname()[1], flush=True); time.sleep(60)' > "$T/port" & LPID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/port" ] && break; sleep 0.2; done; PORT="$(cat "$T/port")"
+jq --arg c "${net_cmd//\$PORT/$PORT}" '.boot_cmd = $c' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1
+same "by default a command can reach a service on localhost" "$(jq -r .status "$QA_HOME/runs/$id/gates/boot.json")" "pass"
+jq --arg c "${net_cmd//\$PORT/$PORT}" '.boot_cmd = $c | .sandbox_net = false' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1
+same "sandbox_net false cuts the network off" "$(jq -r .status "$QA_HOME/runs/$id/gates/boot.json")" "fail"
+kill "$LPID" 2>/dev/null
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+mkdir -p "$T/nobwrap"; for b in bash jq git date cat mkdir cp timeout dirname basename tr sed find sort head tail grep rm touch realpath env ls wc; do ln -s "$(command -v $b)" "$T/nobwrap/$b" 2>/dev/null; done
+out="$(PATH="$T/nobwrap" "$QA" new "$(contract good)" 2>&1)"; [[ "$out" == *"bwrap"* ]] && ok "no sandbox tool -> the run is refused, not run unprotected" || bad "no sandbox tool -> the run is refused, not run unprotected" "$out"
+same "source repo untouched by the cheating run" "$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)" "$SRC_STATE"
 
 echo "# contracts"
 c="$(contract good)"
