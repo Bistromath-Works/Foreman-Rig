@@ -632,6 +632,11 @@ while IFS='|' read -r want cmd; do gcheck "$want" "$cmd" || { allok=0; bad "guar
 0|ls | grep x || true
 CASES
 [ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (38 cases)"
+# A here-document is a file being written. Its text is not read as shell operators.
+doc="$(printf '%s\n' "cat > draft.ts <<'EOF'" 'type A = B & C;' 'const f = (x) => { return x & 1 }' 'EOF')"
+gcheck 0 "$doc" && ok "text inside a here-document is not taken for a background process" || bad "here-document text allowed"
+gcheck 2 "$(printf '%s\n' "$doc" 'pnpm dev &')" && ok "a background process after a here-document is still refused" || bad "background after here-document"
+gcheck 2 "$(printf '%s\n' "bash <<'EOF'" 'git push origin main' 'EOF')" && ok "a banned command inside a here-document is still refused" || bad "banned command in here-document"
 printf '{"tool_name":"Bash","tool_input":{"command":"ls","run_in_background":true}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$B" 2>/dev/null; [ $? -eq 2 ] && ok "a command started in the background is refused" || bad "background flag"
 printf '{"tool_name":"Read","tool_input":{"file_path":"vercel.json"}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$B" 2>/dev/null; [ $? -eq 0 ] && ok "tools that are not a shell are not the guard's business" || bad "non-shell tool"
 printf '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$T/nowhere.json" 2>/dev/null; [ $? -eq 2 ] && ok "with no readable ban list the guard refuses, it does not wave commands through" || bad "guard fails closed"
