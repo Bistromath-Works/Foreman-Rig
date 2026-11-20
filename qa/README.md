@@ -93,7 +93,7 @@ QA rig's own clone. `""` means none. `boot_cmd`, `check_cmd` and `suite_cmd` are
 | `smoke_cmd` | End-to-end smoke; save recordings and screenshots to `$QA_EVIDENCE` |
 | `mutation_cmd` | Optional; `{files}` = the files the fix changed; must exit non-zero when too many mutants survive (Stryker: `thresholds.break`) |
 | `teardown_cmd` | Cleans up after the run; always runs before the clones are deleted. `$QA_RUN` is read-only, so write to `$QA_EVIDENCE` |
-| `test_paths` | Git pathspecs for test files, so the mutation gate can reverse the fix and keep the tests. If reversing would drop a file that is not part of the fix, the gate fails |
+| `test_paths` | Git pathspecs for test files, in any form git accepts, so the mutation gate can reverse the fix and keep the tests. If reversing would drop a file that is not part of the fix, the gate fails |
 | `sandbox_ro` | Folders under your home folder the commands may read, e.g. where node or pnpm live. See "The sandbox" |
 | `sandbox_rw` | Folders the commands may write, for a QA-only cache. See "The sandbox" |
 | `sandbox_net` | `false` cuts the network off for every command. Default `true` |
