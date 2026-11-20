@@ -435,6 +435,57 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=filter.evil.smudge GIT_CONFIG_VALUE_0="touch
 "$QA" verdict "$id" >/dev/null 2>&1
 SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
 
+echo "# review round 4"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"
+# Only this repo's QA env file is visible, not another project's.
+mkdir -p "$QA_HOME/env"; echo A=1 > "$QA_HOME/env/fixture.env"; echo B=2 > "$QA_HOME/env/other.env"
+jq --arg h "$QA_HOME" '.boot_cmd = "test -f \($h)/env/fixture.env && ! test -e \($h)/env/other.env"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1
+same "a run sees its own repo's QA env file and no other project's" "$(jq -r .status "$QA_HOME/runs/$id/gates/boot.json")" "pass"
+# A test path written with git's own pathspec magic is still kept out of the reversal.
+branch extratest
+cat > name.py <<'PY'
+def full_name(first, middle, last):
+    return " ".join(p for p in (first, middle, last) if p)
+PY
+echo 'assert True' > tests/test_extra.py; printf '%s\n' "$repro" > tests/test_empty_middle.py; commit extratest
+jq '.test_paths = [":(glob)tests/**"]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract extratest)")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "a test path with pathspec magic is left out of the fix files" "$(tr '\0' ' ' < "$QA_HOME/runs/$id/fix-files" 2>/dev/null)" "name.py "
+"$QA" verdict "$id" >/dev/null 2>&1
+# An assertion word on a later line of the command itself does not count as the check's output.
+jq '.check_cmd = "python3 {check}\n# AssertionError"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract importerr)")"; for g in boot red; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "the pattern on a later line of the command does not count" "$(jq -r .status "$QA_HOME/runs/$id/gates/red.json" 2>/dev/null)" "fail"
+"$QA" verdict "$id" >/dev/null 2>&1; cp "$T/keep.json" "$QA_REPOS/fixture.json"
+# A fix made only of a line-ending rule: reversing it must bring the old line endings back.
+git -C "$R" checkout -q -b base4 "$BASE"
+echo 'sep.txt text eol=crlf' > "$R/.gitattributes"; printf ' \n' > "$R/sep.txt"
+printf 'def full_name(first, middle, last):\n    s = open("sep.txt", "rb").read().decode().rstrip("\\n")\n    return s.join(p for p in (first, middle, last) if p)\n' > "$R/name.py"
+git -C "$R" add -A; git -C "$R" commit -qm base4; BASE4="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q -b eolfix; echo 'sep.txt text eol=lf' > "$R/.gitattributes"
+printf '%s\n' "$repro" > "$R/tests/test_empty_middle.py"; git -C "$R" add -A; git -C "$R" commit -qm eolfix; git -C "$R" checkout -q main
+jq --arg b "$BASE4" '.base = $b' "$(contract eolfix)" > "$T/eol.json"
+id="$(new "$T/eol.json")"; for g in boot red green mutation; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+same "reversing a line-ending fix brings the old line endings back" "$(jq -r '.status' "$QA_HOME/runs/$id/gates/mutation.json" 2>/dev/null) $(jq -r .status "$QA_HOME/runs/$id/gates/green.json" 2>/dev/null)" "pass pass"
+"$QA" verdict "$id" >/dev/null 2>&1
+# A repro check whose path is a folder on base is a recorded failure, not a crash.
+git -C "$R" checkout -q -b base5 "$BASE"; mkdir -p "$R/tests/test_empty_middle.py"; echo x > "$R/tests/test_empty_middle.py/keep"
+git -C "$R" add -A; git -C "$R" commit -qm base5; BASE5="$(git -C "$R" rev-parse HEAD)"; git -C "$R" checkout -q main
+jq --arg b "$BASE5" '.base = $b' "$(contract good)" > "$T/dirbase.json"
+id="$(new "$T/dirbase.json")"; for g in boot red; do "$QA" gate "$id" $g >/dev/null 2>&1; done
+[ -f "$QA_HOME/runs/$id/gates/red.json" ] && ok "a repro path that is a folder on base still gets a red result" || bad "a repro path that is a folder on base still gets a red result"
+"$QA" verdict "$id" >/dev/null 2>&1
+jq --arg r "$R" '.sandbox_rw = [$r]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+jq --arg r "file://localhost${R//tmp./tmp%2E}" '.repo = $r' "$(contract good)" > "$T/furl.json"
+out="$("$QA" new "$T/furl.json" 2>&1)"; [[ "$out" == *"%"* ]] && ok "a file:// source with % codes is refused, not guessed at" || bad "a file:// source with % codes is refused, not guessed at" "$out"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+jq '.sandbox_net = false | .boot_cmd = "test -z \"$(find /run -type s 2>/dev/null)\""' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(contract good)")"; "$QA" gate "$id" boot >/dev/null 2>&1
+same "no service socket is visible under /run" "$(jq -r .status "$QA_HOME/runs/$id/gates/boot.json")" "pass"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+
 echo "# contracts"
 c="$(contract good)"
 for pair in 'issue|"cf 9"' 'issue|"../x"' 'repro_check|"tests/x.py; rm -rf ~"' 'repro_check|"../outside.py"' 'candidate|"main; reboot"' 'reply_to|"nobody"' 'repo|"--upload-pack=x"' 'budget|{"wall_minutes":0,"tokens":1}'; do

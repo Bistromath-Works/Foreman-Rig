@@ -23,7 +23,9 @@
   Also fixed: an assertion early in a very long log was missed, an executable repro check
   lost its executable bit, a fix that renames a file could not be reversed, and a checkout
   the candidate had locked was never deleted. The red gate now runs the same bytes and file
-  mode as the green gate, and reversing a fix never removes a test that is meant to stay.
+  mode as the green gate, and reversing a fix never removes a test that is meant to stay. The mutation gate
+  rebuilds its copy from git, so a fix made of line-ending rules reverses correctly. Only the
+  repo's own `<QA home>/env/<repo>.env` is readable inside the sandbox.
 
 - **Optional coder seat (CF-12).** `scripts/foreman init <project> --coder` adds a fourth seat
   for a smaller, cheaper model, usually a local one. The owner hands it small, fully specified
