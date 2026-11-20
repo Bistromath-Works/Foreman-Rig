@@ -76,9 +76,13 @@ Then wait. Do not start a job by yourself.
    `qa/contract.example.json` next to the QA command): `repo` = this repo's path, `base`,
    `candidate` = the exact commit, `issue` = the Linear id or the job id, `done_condition` = the
    job's goal in one or two plain sentences of user-visible behavior (from `SPEC.md`, not from
-   your code), `repro_check` = the regression test that fails without your change (`""` if
+   your code), `done_items` = the same goal as a list, one checkable behavior per item, `repro_check` = the regression test that fails without your change (`""` if
    none), `budget` (`wall_minutes` 60, `tokens` 300000), `reply_to` = your own session. Send it:
-   `<qa_cmd> send .foreman/jobs/<job-id>/ctx/qa-r<N>.json`. Wait for the queue item back; its
+   `<qa_cmd> send .foreman/jobs/<job-id>/ctx/qa-r<N>.json`. If the send is refused because the
+   screener (a quick model check) calls a done item untouched, nothing was queued: do the item
+   and send again. Only if the item really is done, send again with
+   `--no-screen "<file and line where it is done>"`. A screener with no objection is not a
+   pass. Wait for the queue item back; its
    body points to `verdict.md`. Act on the verdict:
    - `pass`: go to Check with the same candidate.
    - `fail`: a fix round (step 6), naming the failed gate. Counts against the three-BLOCK cap.

@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Screener: a fast model judgment on a candidate before the QA rig spends any compute on it.
+#
+#   scripts/screen check <contract.json>   judge the candidate against each done-condition item
+#   scripts/screen override <contract.json> <reason>   record that the Lead overruled a send-back
+#   scripts/screen report                  every screener call beside what the QA gates found
+#
+# check exits 0 (no objection, or the screener did not run) or 3 (send the job back).
+#
+# The screener is one-directional. It can send a job back; it never grants a pass and never
+# stands in for a gate. Its answer is a model's judgment and is labelled as one. When it cannot
+# run (switched off, no key, no stored threshold for the model, the service fails, the diff is
+# too large) the job goes on to QA as if there were no screener.
+#
+# It is a direct call to TypeSafe's Jev through OpenRouter, with no agent harness. What leaves
+# the machine: the candidate's diff, its list of changed files and the done-condition items.
+# Switch it on per repo ("screener": "openrouter" in the repo's QA settings) and never for a
+# repo whose code may not leave the machine.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QA_HOME="${QA_HOME:-$HOME/.foreman-qa}"
+QA_REPOS="${QA_REPOS:-$ROOT/qa/repos}"
+SCREEN_URL="${SCREEN_URL:-https://openrouter.ai/api/v1/systemone}"
+# Pinned: thresholds are stored per model, and an alias like jev-latest moves under them.
+SCREEN_MODEL="${SCREEN_MODEL:-typesafe/jev-1.14}"
+THRESHOLDS="${SCREEN_THRESHOLDS:-$ROOT/qa/screener.thresholds.json}"
+MAX_DIFF_CHARS=60000
+LOG="$QA_HOME/screener/log.jsonl"
+
+die() { printf 'screen: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+usage() { sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+repo_slug() { basename "${1%/}" .git | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-\n' '-'; }
+
+# One line per call. $1 = decision (no_objection | send_back | skipped), $2 = reason,
+# $3 = JSON array of {item, p_addressed} (or []).
+log_call() {
+  mkdir -p "$(dirname "$LOG")"
+  jq -cn --arg d "$1" --arg r "$2" --argjson items "$3" --arg m "$SCREEN_MODEL" --arg at "$(date -u +%FT%TZ)" \
+        --arg issue "$ISSUE" --arg repo "$SLUG" --arg cand "$CAND_SHA" --arg base "$BASE_SHA" \
+        --argjson t "${THRESHOLD:-null}" \
+    '{at:$at, issue:$issue, repo:$repo, base:$base, candidate:$cand, model:$m, threshold:$t,
+      kind:"judgment", decision:$d, reason:$r, items:$items}' >>"$LOG"
+}
+
+# The screener did not run: say why, log it, let the job go on.
+skip() { log_call skipped "$1" '[]'; say "screener skipped: $1"; exit 0; }
+
+cmd_check() {
+  local c="${1:-}"; [ -n "$c" ] && [ -f "$c" ] || usage
+  local repo rf mode base cand
+  repo="$(jq -r .repo "$c")"; SLUG="$(repo_slug "$repo")"; ISSUE="$(jq -r .issue "$c")"
+  base="$(jq -r .base "$c")"; cand="$(jq -r .candidate "$c")"
+  BASE_SHA=""; CAND_SHA=""; THRESHOLD=""
+  rf="$QA_REPOS/$SLUG.json"
+  mode="$(jq -r '.screener // "off"' "$rf" 2>/dev/null || echo off)"
+  case "$mode" in
+    off) say "screener off for $SLUG"; exit 0 ;;
+    openrouter) ;;
+    *) die "$rf: screener must be \"off\" or \"openrouter\"" ;;
+  esac
+  BASE_SHA="$(git -C "$repo" rev-parse --verify -q "$base^{commit}")" || skip "base $base not found in $repo"
+  CAND_SHA="$(git -C "$repo" rev-parse --verify -q "$cand^{commit}")" || skip "candidate $cand not found in $repo"
+  THRESHOLD="$(jq -r --arg m "$SCREEN_MODEL" '.[$m].untouched_below // empty' "$THRESHOLDS" 2>/dev/null || true)"
+  [[ "$THRESHOLD" =~ ^0?\.[0-9]+$ ]] || { THRESHOLD=""; skip "no stored threshold for model $SCREEN_MODEL in $THRESHOLDS"; }
+  [ -n "${OPENROUTER_API_KEY:-}" ] || skip "OPENROUTER_API_KEY is not set"
+  command -v curl >/dev/null 2>&1 || skip "curl is not installed"
+
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT   # not local: the trap runs after the function returns
+  git -C "$repo" diff --no-color --no-ext-diff "$BASE_SHA...$CAND_SHA" >"$tmp/diff" 2>/dev/null || skip "could not diff $base...$cand"
+  [ -s "$tmp/diff" ] || skip "the candidate changes nothing against base"
+  [ "$(wc -c <"$tmp/diff")" -le "$MAX_DIFF_CHARS" ] || skip "diff is over $MAX_DIFF_CHARS characters"
+  git -C "$repo" diff --name-only "$BASE_SHA...$CAND_SHA" >"$tmp/files"
+
+  # One yes/no question per done-condition item. The question is only "was this item worked on
+  # at all", never "is it right": right or wrong is for the gates.
+  jq -n --arg m "$SCREEN_MODEL" --rawfile diff "$tmp/diff" --rawfile files "$tmp/files" --slurpfile c "$c" '
+    ($c[0].done_items // [$c[0].done_condition]) as $items
+    | {model:$m,
+       state:{diff:$diff, changed_files:($files | split("\n") | map(select(length > 0)))},
+       questions:([$items | to_entries[] | {key:("item_\(.key)"), value:{
+         type:"noul",
+         instructions:("`diff` is a code change. Does `diff` contain work on this requirement? Requirement: " + .value),
+         criteria:{
+           true:"At least one change in `diff` (code, settings or tests) works toward this requirement, even if it is incomplete or might be wrong",
+           false:"Nothing in `diff` relates to this requirement: it was left untouched"}}}] | from_entries)}' >"$tmp/body.json"
+
+  local http
+  http="$(printf 'header = "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
+    | curl -sS --max-time 45 --config - -o "$tmp/resp.json" -w '%{http_code}' \
+        -H 'Content-Type: application/json' -H 'User-Agent: foreman-screener/1' \
+        --data-binary "@$tmp/body.json" "$SCREEN_URL" 2>"$tmp/curl.err")" || skip "request failed: $(head -c 200 "$tmp/curl.err" | tr '\n' ' ')"
+  [ "$http" = 200 ] || skip "the model service answered HTTP $http"
+
+  # Model output is checked in code before anything uses it: every item must have a number 0..1.
+  local items
+  items="$(jq -c --slurpfile c "$c" '
+    . as $r | ($c[0].done_items // [$c[0].done_condition]) | to_entries
+    | map({item:.value, p_addressed:$r.answers["item_\(.key)"].noul})
+    | if all(.[]; (.p_addressed | type) == "number" and .p_addressed >= 0 and .p_addressed <= 1) then . else error("bad answer") end' \
+    "$tmp/resp.json" 2>/dev/null)" || skip "the model's answer was not in the expected form"
+
+  local untouched
+  untouched="$(jq -r --argjson t "$THRESHOLD" '.[] | select(.p_addressed < $t) | "  - \(.item)  (chance it was worked on: \(.p_addressed * 100 | round)%)"' <<<"$items")"
+  if [ -n "$untouched" ]; then
+    log_call send_back "done-condition item looks untouched" "$items"
+    say "screener judgment (a model's opinion, not a gate): SEND BACK"
+    say "These done-condition items look untouched by the change:"
+    say "$untouched"
+    exit 3
+  fi
+  log_call no_objection "" "$items"
+  say "screener judgment (a model's opinion, not a gate): no objection. This is not a pass; the gates decide."
+}
+
+# The Lead disagrees with a send-back and sends the job to QA anyway. Logged, so the report
+# shows how often the screener and the Lead disagree and who the gates sided with.
+cmd_override() {
+  local c="${1:-}" why="${2:-}"; [ -n "$c" ] && [ -f "$c" ] && [ -n "$why" ] || usage
+  local repo; repo="$(jq -r .repo "$c")"; SLUG="$(repo_slug "$repo")"; ISSUE="$(jq -r .issue "$c")"; THRESHOLD=""
+  BASE_SHA="$(git -C "$repo" rev-parse --verify -q "$(jq -r .base "$c")^{commit}" || true)"
+  CAND_SHA="$(git -C "$repo" rev-parse --verify -q "$(jq -r .candidate "$c")^{commit}" || true)"
+  log_call overridden "$why" '[]'
+  say "screener overruled by the Lead: $why"
+}
+
+# Every screener call beside the verdict of the QA run on the same commit, if there was one.
+cmd_report() {
+  [ -f "$LOG" ] || { say "no screener calls logged yet ($LOG)"; return; }
+  local d v; : >"$LOG.verdicts.tmp"
+  for d in "$QA_HOME"/runs/*/; do
+    [ -f "$d/verdict.json" ] && [ -f "$d/candidate.sha" ] || continue
+    jq -c --arg s "$(cat "$d/candidate.sha")" '{candidate:$s, verdict:.verdict, gate:.gate}' "$d/verdict.json" >>"$LOG.verdicts.tmp"
+  done
+  jq -rn --slurpfile v "$LOG.verdicts.tmp" '
+    [inputs] as $calls
+    | ($v | map({key:.candidate, value:.}) | from_entries) as $qa
+    | ($calls | map(. + {qa:($qa[.candidate] // null)})) as $rows
+    | ($rows | map(select(.decision == "no_objection" and .qa != null))) as $judged
+    | "at | issue | screener | QA verdict",
+      ($rows[] | "\(.at) | \(.issue) | \(.decision)\(if .reason != "" then " (\(.reason))" else "" end) | \(if .qa then .qa.verdict + (if .qa.gate then " at " + .qa.gate else "" end) else "no QA run" end)"),
+      "",
+      "calls: \($rows | length); sent back: \($rows | map(select(.decision == "send_back")) | length); overruled by the Lead: \($rows | map(select(.decision == "overridden")) | length); skipped: \($rows | map(select(.decision == "skipped")) | length)",
+      "no objection, then QA ran: \($judged | length); of those QA did not pass: \($judged | map(select(.qa.verdict != "pass")) | length)"' "$LOG"
+  rm -f "$LOG.verdicts.tmp"
+}
+
+case "${1:-}" in
+  check) shift; cmd_check "$@" ;;
+  override) shift; cmd_override "$@" ;;
+  report) shift; cmd_report "$@" ;;
+  *) usage ;;
+esac

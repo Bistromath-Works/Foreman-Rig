@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Screener, first check (CF-14).** `scripts/qa send` can now ask a fast model (TypeSafe's Jev
+  through OpenRouter) whether each done-condition item was worked on at all, and refuses to
+  queue a QA run when one looks untouched. It can only send a job back; it never passes one,
+  and when it cannot run the job goes to QA as before. Off by default: set
+  `"screener": "openrouter"` in a repo's QA settings. Contracts gain an optional `done_items`
+  list. `scripts/screen report` shows every call beside what the gates found.
+
 - **QA gates run in a sandbox (CF-11).** Every command from a repo's QA settings, and so all
   candidate code, now runs inside bubblewrap: the disk is read-only, the home folder is hidden,
   the environment is cleared, and only the checkout and the evidence folder are writable.

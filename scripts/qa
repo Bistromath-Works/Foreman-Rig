@@ -7,7 +7,7 @@
 #   scripts/qa up | down               launch / stop the QA rig
 #   scripts/qa hook <repo> on|off      merge gate: foreman/ branches need a QA pass to merge
 # Build side (the build rig's Lead):
-#   scripts/qa send <contract.json>    validate a contract and queue it for the gatekeeper
+#   scripts/qa send <contract.json>    validate a contract, screen it, queue it for the gatekeeper
 # QA side (the gatekeeper):
 #   scripts/qa new <contract.json>     start a run: check the contract, clone, print the run id
 #   scripts/qa gate <run> <gate>       run one gate: boot red green mutation probe suite audit
@@ -70,6 +70,8 @@ contract_problems() {
   v="$(jq -r '.issue // ""' "$c")"; [ -z "$v" ] || [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || say "'issue' must be a Linear id like MNS-12 or a job id like fmn-20261119-0930"
   v="$(jq -r '.reply_to // ""' "$c")"; [ -z "$v" ] || [[ "$v" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$ ]] || say "'reply_to' must be a seat session like crew-owner@my-rig"
   v="$(jq -r '.repro_check // ""' "$c")"; [ -z "$v" ] || safe_path "$v" || say "'repro_check' must be a plain repo-relative path"
+  jq -e '(.done_items // ["x"]) | type == "array" and length >= 1 and length <= 20 and all(.[]; type == "string" and length > 0)' "$c" >/dev/null \
+    || say "'done_items' must be a list of 1 to 20 non-empty strings (or left out)"
 }
 
 check_contract() {
@@ -553,6 +555,7 @@ cmd_verdict() {
     say ""
     say "## Done condition"
     jq -r .done_condition "$run/contract.json"
+    jq -r '.done_items // [] | .[] | "- " + .' "$run/contract.json"
     say ""
     say "## Gates (mechanical gates are facts; the audit is a judgment)"
     say ""
@@ -617,6 +620,19 @@ cmd_send() {
   local to; to="$(jq -r .reply_to "$c")"
   rig ps --nodes -A --json 2>/dev/null | jq -e --arg s "$to" '[.. | strings] | index($s) != null' >/dev/null \
     || die "reply_to '$to' is not a seat OpenRig knows (rig ps --nodes -A); the verdict would have nowhere to go"
+  # The screener may send the job back before QA spends anything on it. It can only send back:
+  # when it has no objection, or cannot run, the job goes on to the gates as before.
+  if [ "${2:-}" = --no-screen ]; then
+    [ -n "${3:-}" ] || die "--no-screen needs a reason: where is the item the screener called untouched?"
+    QA_HOME="$QA_HOME" QA_REPOS="$QA_REPOS" "$ROOT/scripts/screen" override "$c" "$3"
+  elif [ -n "${2:-}" ]; then usage
+  else
+    local sc=0
+    QA_HOME="$QA_HOME" QA_REPOS="$QA_REPOS" "$ROOT/scripts/screen" check "$c" || sc=$?
+    [ "$sc" -ne 3 ] || die "not sent to QA: the screener sent the job back (see above). Work on those items and send again.
+If the screener is wrong, send with the reason: scripts/qa send $c --no-screen \"<where the item is done>\""
+    [ "$sc" -eq 0 ] || say "warning: the screener stopped with an error ($sc); sending to QA without it"
+  fi
   mkdir -p "$QA_HOME/inbox"
   f="$QA_HOME/inbox/$(jq -r .issue "$c")-$(date +%Y%m%d-%H%M%S).json"
   cp "$c" "$f"

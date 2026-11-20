@@ -422,6 +422,57 @@ out="$(PATH="$T/bin:$PATH" "$QA" send "$c" 2>&1)"; [[ "$out" == *"queued for qa-
 jq '.reply_to = "nobody@nowhere"' "$c" > "$T/r.json"
 out="$(PATH="$T/bin:$PATH" "$QA" send "$T/r.json" 2>&1)"; [[ "$out" == *"not a seat OpenRig knows"* ]] && ok "send refuses an unknown reply seat" || bad "send refuses an unknown reply seat" "$out"
 
+echo "# the screener"
+SCREEN="$ROOT/scripts/screen"
+# A stand-in for curl: saves what it was sent, answers with the canned file and status.
+cat > "$T/bin/curl" <<'SH'
+#!/bin/sh
+out=""; body=""
+echo "$@" > "$CURL_DIR/argv"; cat > "$CURL_DIR/config"
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; --data-binary) body="${2#@}"; shift ;; esac; shift; done
+cp "$body" "$CURL_DIR/body.json"
+cat "$CURL_DIR/answer.json" > "$out"; printf '%s' "$(cat "$CURL_DIR/status")"
+SH
+chmod +x "$T/bin/curl"; mkdir -p "$T/curl"; export CURL_DIR="$T/curl"
+answer() { echo "${3:-200}" > "$T/curl/status"; jq -n --argjson a "$1" --argjson b "$2" '{model:"typesafe/jev-1.14-test", answers:{item_0:{type:"noul",noul:$a}, item_1:{type:"noul",noul:$b}}}' > "$T/curl/answer.json"; }
+two_items() { jq '.done_items = ["An empty middle name gives one space between first and last name.", "The settings page can export all contacts as CSV."]' "$(contract good)" > "$T/two.json"; printf '%s' "$T/two.json"; }
+send() { PATH="$T/bin:$PATH" OPENROUTER_API_KEY=sk-test-key "$QA" send "$@" 2>&1; }
+queued() { wc -l < "$QA_HOME/queued.log" | tr -d ' '; }
+last_log() { tail -n 1 "$QA_HOME/screener/log.jsonl" 2>/dev/null | jq -r "$1"; }
+c2="$(two_items)"; n="$(queued)"
+out="$(send "$c2")"; same "screener off for the repo: sent as before" "$(queued)" "$((n+1))"
+[ ! -e "$QA_HOME/screener/log.jsonl" ] && ok "screener off: no model call, nothing logged" || bad "screener off: no model call, nothing logged"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"; jq '.screener = "openrouter"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+answer 0.82 0.02; n="$(queued)"
+out="$(send "$c2")"; rc=$?
+[ "$rc" -ne 0 ] && [ "$(queued)" = "$n" ] && ok "an untouched done-condition item: sent back, no QA run queued" || bad "an untouched done-condition item: sent back, no QA run queued" "$out"
+[[ "$out" == *"export all contacts as CSV"* && "$out" != *"- An empty middle name"* ]] && ok "the send-back names the untouched item only" || bad "the send-back names the untouched item only" "$out"
+[[ "$out" == *"not a gate"* ]] && ok "the send-back is labelled a judgment" || bad "the send-back is labelled a judgment" "$out"
+same "the call is logged with its decision" "$(last_log '.decision + " " + .kind + " " + (.items | length | tostring)')" "send_back judgment 2"
+same "one question per item, about the diff" "$(jq -r '(.questions | keys | join(",")) + " " + (.state.diff | test("name.py") | tostring) + " " + .model' "$T/curl/body.json")" "item_0,item_1 true typesafe/jev-1.14"
+! grep -q sk-test-key "$T/curl/argv" && grep -q sk-test-key "$T/curl/config" && ok "the key is not on the command line" || bad "the key is not on the command line"
+answer 0.82 0.71; n="$(queued)"
+out="$(send "$c2")"; same "every item worked on: goes to QA" "$(queued)" "$((n+1))"
+[[ "$out" != *"warning"* ]] && ok "a clean screener call ends without an error" || bad "a clean screener call ends without an error" "$out"
+[[ "$out" == *"not a pass"* ]] && ok "no objection is never called a pass" || bad "no objection is never called a pass" "$out"
+same "no objection is logged" "$(last_log .decision)" "no_objection"
+answer 0.82 0.02 500; n="$(queued)"
+out="$(send "$c2")"; same "model service down: goes to QA without the screener" "$(queued) $(last_log .decision)" "$((n+1)) skipped"
+echo 200 > "$T/curl/status"; echo '{"answers":{"item_0":{"type":"noul","noul":"high"}}}' > "$T/curl/answer.json"; n="$(queued)"
+out="$(send "$c2")"; same "answer in the wrong form: not trusted, goes to QA" "$(queued) $(last_log .decision)" "$((n+1)) skipped"
+answer 0.82 0.02; n="$(queued)"
+out="$(SCREEN_MODEL=other/model send "$c2")"; same "a model with no stored threshold does not screen" "$(queued) $(last_log .decision)" "$((n+1)) skipped"
+out="$(PATH="$T/bin:$PATH" "$QA" send "$c2" 2>&1)"; same "no key: goes to QA without the screener" "$(last_log .reason)" "OPENROUTER_API_KEY is not set"
+n="$(queued)"; out="$(send "$c2" --no-screen)"; [ "$?" -ne 0 ] && [ "$(queued)" = "$n" ] && ok "overruling the screener needs a reason" || bad "overruling the screener needs a reason" "$out"
+out="$(send "$c2" --no-screen "export button is in settings.py line 40")"; same "the Lead can overrule with a reason, and it is logged" "$(queued) $(last_log '.decision + ": " + .reason')" "$((n+1)) overridden: export button is in settings.py line 40"
+answer 0.9 0.9; out="$(send "$(contract good)")"; same "a contract without done_items asks about the done condition" "$(jq -r '.questions | keys | join(",")' "$T/curl/body.json")" "item_0"
+out="$(PATH="$T/bin:$PATH" "$SCREEN" report 2>&1)"; [[ "$out" == *"sent back: 1; overruled by the Lead: 1"* && "$out" == *"QA did not pass:"* ]] && ok "report counts the calls beside the QA verdicts" || bad "report counts the calls beside the QA verdicts" "$out"
+for v in '[]' '[""]' '"one"' '[1]'; do
+  jq --argjson v "$v" '.done_items = $v' "$(contract good)" > "$T/bad.json"
+  out="$("$QA" validate "$T/bad.json" 2>&1)" && bad "refuses done_items $v" || ok "refuses done_items $v"
+done
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+
 echo
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]

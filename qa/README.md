@@ -44,6 +44,7 @@ The build rig's Lead writes one JSON file per candidate. See `contract.example.j
 | `candidate` | Commit or branch under test |
 | `issue` | Linear issue id, e.g. `MNS-42` |
 | `done_condition` | Plain-English done, as confirmed by the Lead |
+| `done_items` | Optional. The done condition as a list, one checkable item per line. The screener asks about each one |
 | `repro_check` | Repo-relative path of the failing check, or `""` |
 | `budget` | `wall_minutes` (enforced) and `tokens` (recorded only in v0.1) |
 | `reply_to` | The seat that gets the verdict, e.g. `crew-owner@foreman-magnus-nova-service` |
@@ -96,6 +97,7 @@ QA rig's own clone. `""` means none. `boot_cmd`, `check_cmd` and `suite_cmd` are
 | `sandbox_ro` | Folders under your home folder the commands may read, e.g. where node or pnpm live. See "The sandbox" |
 | `sandbox_rw` | Folders the commands may write, for a QA-only cache. See "The sandbox" |
 | `sandbox_net` | `false` cuts the network off for every command. Default `true` |
+| `screener` | `"openrouter"` turns the screener on for this repo. Default `"off"`. See "The screener" |
 
 ## Sending work (the build side)
 
@@ -103,11 +105,43 @@ QA rig's own clone. `""` means none. `boot_cmd`, `check_cmd` and `suite_cmd` are
 scripts/qa send contract.json
 ```
 
-This checks the contract, copies it to `~/.foreman-qa/inbox/` and creates a queue item for
+This checks the contract, runs the screener if the repo has it on (below), copies the contract
+to `~/.foreman-qa/inbox/` and creates a queue item for
 `qa-gatekeeper@foreman-qa`. The gatekeeper hands the verdict back to `reply_to` as a queue item
 whose body is `verdict: <path to verdict.md>`. The two rigs stay separate topologies. They
 meet only through the contract file and OpenRig's queue, so any build rig on any substrate can
 plug in.
+
+## The screener
+
+A fast model check that runs inside `scripts/qa send`, before anything is queued. It exists to
+save QA compute on a job that is plainly unfinished. It asks one yes/no question per item in
+`done_items` (or about `done_condition` if there are none): was this item worked on at all in
+the candidate's diff? If an item looks untouched, the send is refused and the item is named.
+
+| Rule | How it is kept |
+| --- | --- |
+| It can only send back. It never grants a pass and never replaces a gate | `scripts/screen` has two outcomes, "send back" and "no objection"; the gates run either way after "no objection" |
+| Its answer is a judgment | Every line it prints and logs says so |
+| The model's answer is checked in code | An answer that is not a number from 0 to 1 for every item is thrown away |
+| If it cannot run, the job goes on | Off, no key, no threshold, service down, diff over 60,000 characters: logged as skipped, sent to QA |
+| Thresholds are stored per model | `qa/screener.thresholds.json`; a model with no entry does not screen |
+| The Lead can overrule it, with a reason | `scripts/qa send <contract> --no-screen "<where the item is done>"`, logged |
+
+It is a direct call to TypeSafe's Jev through OpenRouter (`typesafe/jev-1.14`, pinned). The
+candidate's diff, its changed file names and the done-condition items leave the machine. It is
+off unless a repo's settings say `"screener": "openrouter"`. Leave it off for any repo whose
+code may not leave the machine. The key is `OPENROUTER_API_KEY` in the environment of the seat
+that runs `scripts/qa send`.
+
+The threshold (an item is "untouched" below a 30% chance it was worked on) is provisional. It
+has not been set on golden tasks yet.
+
+`scripts/screen report` lists every screener call beside the verdict of the QA run on the same
+commit, and counts how often QA failed a job the screener had no objection to.
+
+Not built yet: the rulebook check, the risk ranking of changed hunks, a local model for
+repos whose code stays on the machine, and the hosted fallback model.
 
 ## Hooking up a Foreman crew
 
