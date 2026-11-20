@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The audit and the rulebook cap (CF-13).** `rulebook.json` lists the instruction files the
+  seats are given and caps their total size; `scripts/clu rulebook` fails when it is over.
+  `scripts/clu audit <project>` has a model outside both rigs read the lessons ledger and
+  propose at most one rulebook change, as a patch. Code checks every proposal: three or more
+  jobs, an exact single match, no growth, nothing that looks like a key. It never merges.
+
 - **Screener: rule check, risk ranking and a fallback model (CF-14).** In the same request the
   screener now asks whether the change breaks each rule in `qa/screener.rules.json` and how
   risky each changed hunk is. Both are flags for the reviewer, shown by `scripts/qa send` and
