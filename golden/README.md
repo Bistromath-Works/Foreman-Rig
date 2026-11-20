@@ -24,9 +24,11 @@ project is in here.
 | `narrowed-fix` | The fix handles only part of the problem | probe gate |
 | `untouched-item` | A done-condition item was never worked on | screener, else probe gate |
 | `breaks-other` | The fix breaks something else | suite gate |
-| `rule-broken` | The change deletes a check from an existing, protected test | rules gate |
+| `rule-broken` | The change deletes a check from an existing, protected test | rules gate; the screener also flags it |
+| `secret-added` | A correct fix that also puts a (made-up) API key in a source file | No gate. Only the screener's rule check flags it |
 
-Baseline score: 8 of 8 planted defects caught, no false alarm on the clean task.
+Baseline score: 8 of 8 planted defects caught, no false alarm on the two tasks the gates
+should pass. With `--screener`: 2 of 2 planted rule breaks flagged, no false flag.
 
 ## What a run does, and what it does not
 
@@ -44,7 +46,11 @@ measure how good the live prober or auditor are. A task "caught by probe" says t
 works when the prober writes the right check, not that the prober will write it.
 
 `--screener` adds one live model call per task. The screener's answer is recorded next to the
-gates' results, with the chance it gave each done-condition item.
+gates' results: the chance it gave each done-condition item, the chance it gave each rule of
+being broken, and its risk ranking. A task's `expect.flags` lists the rules it should flag, and
+any other flag counts as a false one. To measure another model, name it:
+`SCREEN_MODEL=liquid/d1.2-ultra scripts/golden --screener` (it needs an entry in
+`qa/screener.thresholds.json` first).
 
 ## A task folder
 

@@ -82,7 +82,8 @@ Then wait. Do not start a job by yourself.
    screener (a quick model check) calls a done item untouched, nothing was queued: do the item
    and send again. Only if the item really is done, send again with
    `--no-screen "<file and line where it is done>"`. A screener with no objection is not a
-   pass. Wait for the queue item back; its
+   pass. If the send prints flags "for the reviewer", copy them into the check brief as they
+   are: they are a model's guesses about where to look, not findings. Wait for the queue item back; its
    body points to `verdict.md`. Act on the verdict:
    - `pass`: go to Check with the same candidate.
    - `fail`: a fix round (step 6), naming the failed gate. Counts against the three-BLOCK cap.

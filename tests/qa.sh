@@ -612,6 +612,8 @@ out=""; body=""
 echo "$@" > "$CURL_DIR/argv"; cat > "$CURL_DIR/config"
 while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; --data-binary) body="${2#@}"; shift ;; esac; shift; done
 cp "$body" "$CURL_DIR/body.json"
+m="$(jq -r .model "$body" | tr '/' '_')"
+if [ -f "$CURL_DIR/status.$m" ]; then cat "$CURL_DIR/answer.json" > "$out"; printf '%s' "$(cat "$CURL_DIR/status.$m")"; exit 0; fi
 cat "$CURL_DIR/answer.json" > "$out"; printf '%s' "$(cat "$CURL_DIR/status")"
 SH
 chmod +x "$T/bin/curl"; mkdir -p "$T/curl"; export CURL_DIR="$T/curl"
@@ -630,7 +632,7 @@ out="$(send "$c2")"; rc=$?
 [[ "$out" == *"export all contacts as CSV"* && "$out" != *"- An empty middle name"* ]] && ok "the send-back names the untouched item only" || bad "the send-back names the untouched item only" "$out"
 [[ "$out" == *"not a gate"* ]] && ok "the send-back is labelled a judgment" || bad "the send-back is labelled a judgment" "$out"
 same "the call is logged with its decision" "$(last_log '.decision + " " + .kind + " " + (.items | length | tostring)')" "send_back judgment 2"
-same "one question per item, about the diff" "$(jq -r '(.questions | keys | join(",")) + " " + (.state.diff | test("name.py") | tostring) + " " + .model' "$T/curl/body.json")" "item_0,item_1 true typesafe/jev-1.14"
+same "one question per item, about the diff" "$(jq -r '([.questions | keys[] | select(startswith("item_"))] | join(",")) + " " + (.state.diff | test("name.py") | tostring) + " " + .model' "$T/curl/body.json")" "item_0,item_1 true typesafe/jev-1.14"
 ! grep -q sk-test-key "$T/curl/argv" && grep -q sk-test-key "$T/curl/config" && ok "the key is not on the command line" || bad "the key is not on the command line"
 answer 0.82 0.71; n="$(queued)"
 out="$(send "$c2")"; same "every item worked on: goes to QA" "$(queued)" "$((n+1))"
@@ -646,8 +648,33 @@ out="$(SCREEN_MODEL=other/model send "$c2")"; same "a model with no stored thres
 out="$(PATH="$T/bin:$PATH" "$QA" send "$c2" 2>&1)"; same "no key: goes to QA without the screener" "$(last_log .reason)" "OPENROUTER_API_KEY is not set"
 n="$(queued)"; out="$(send "$c2" --no-screen)"; [ "$?" -ne 0 ] && [ "$(queued)" = "$n" ] && ok "overruling the screener needs a reason" || bad "overruling the screener needs a reason" "$out"
 out="$(send "$c2" --no-screen "export button is in settings.py line 40")"; same "the Lead can overrule with a reason, and it is logged" "$(queued) $(last_log '.decision + ": " + .reason')" "$((n+1)) overridden: export button is in settings.py line 40"
-answer 0.9 0.9; out="$(send "$(contract good)")"; same "a contract without done_items asks about the done condition" "$(jq -r '.questions | keys | join(",")' "$T/curl/body.json")" "item_0"
+answer 0.9 0.9; out="$(send "$(contract good)")"; same "a contract without done_items asks about the done condition" "$(jq -r '[.questions | keys[] | select(startswith("item_"))] | join(",")' "$T/curl/body.json")" "item_0"
 out="$(PATH="$T/bin:$PATH" "$SCREEN" report 2>&1)"; [[ "$out" == *"sent back: 1; overruled by the Lead: 1"* && "$out" == *"QA did not pass:"* ]] && ok "report counts the calls beside the QA verdicts" || bad "report counts the calls beside the QA verdicts" "$out"
+# rule flags and the risk ranking: flags for the reviewer, never a send-back
+flagged() { echo 200 > "$T/curl/status"; jq -n --argjson rule "$1" --argjson risk "$2" '{model:"typesafe/jev-1.14-test", answers:{item_0:{type:"noul",noul:0.9}, item_1:{type:"noul",noul:0.9},
+  rule_0:{type:"noul",noul:$rule}, rule_1:{type:"noul",noul:0.05}, rule_2:{type:"noul",noul:"oops"}, rule_3:{type:"noul",noul:0.1},
+  hunk_0:{type:"score",score:$risk}, hunk_1:{type:"score",score:0.4}}}' > "$T/curl/answer.json"; }
+flagged 0.93 2.6; n="$(queued)"
+out="$(send "$c2")"; same "a broken rule and a risky hunk are flags: the job still goes to QA" "$(queued) $(last_log .decision)" "$((n+1)) no_objection"
+[[ "$out" == *"rule flag: no-secrets may be broken (93%)"* && "$out" == *"read first: name.py"* && "$out" == *"flags, not findings"* ]] && ok "the flags are printed for the reviewer and labelled" || bad "the flags are printed for the reviewer and labelled" "$out"
+same "the flags are logged; a malformed rule answer is dropped, not guessed" "$(last_log '[(.flags.rules_flagged | map(.id) | join(",")), (.flags.rules | length), (.flags.riskiest | length)] | join(" ")')" "no-secrets 3 1"
+same "the request asks about each rule and each changed hunk" "$(jq -r '[.questions | keys[] | split("_")[0]] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' "$T/curl/body.json")" "hunk=2 item=2 rule=4"
+sf="$(ls -t "$QA_HOME"/inbox/*.screen.json 2>/dev/null | head -1)"; cf="${sf%.screen.json}.json"
+[ -f "$sf" ] && [ -f "$cf" ] && ok "the screener's record is saved beside the queued contract" || bad "the screener's record is saved beside the queued contract"
+id="$(new "$cf")"; "$QA" verdict "$id" >/dev/null 2>&1
+grep -q "Screener flags (a model's judgment, not a gate" "$QA_HOME/runs/$id/verdict.md" && grep -q 'rule no-secrets may be broken (93%)' "$QA_HOME/runs/$id/verdict.md" && ok "the verdict shows the screener's flags, labelled as a judgment" || bad "the verdict shows the screener's flags, labelled as a judgment" "$(tail -12 "$QA_HOME/runs/$id/verdict.md")"
+flagged 0.2 0.5; out="$(send "$c2")"; [[ "$out" != *"rule flag"* && "$out" != *"read first"* ]] && ok "nothing flagged: no flag lines" || bad "nothing flagged: no flag lines" "$out"
+# the fallback model: only when the repo names it, only when the first model cannot answer
+flagged 0.2 0.5; echo 503 > "$T/curl/status.typesafe_jev-1.14"; echo 200 > "$T/curl/status.liquid_d1.2-ultra"; n="$(queued)"
+out="$(send "$c2")"; same "first model down and no fallback named: skipped, goes to QA" "$(queued) $(last_log .decision)" "$((n+1)) skipped"
+jq '.screener = "openrouter" | .screener_fallback = "liquid/d1.2-ultra"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+out="$(send "$c2")"; same "first model down and a fallback named: the fallback answers, with its own thresholds" "$(last_log '.decision + " " + .model')" "no_objection liquid/d1.2-ultra"
+jq '.screener = "openrouter" | .screener_fallback = "other/unknown"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+out="$(send "$c2")"; same "a fallback with no stored thresholds is not used" "$(last_log .decision)" "skipped"
+rm -f "$T/curl/status.typesafe_jev-1.14" "$T/curl/status.liquid_d1.2-ultra"; jq '.screener = "openrouter"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+jq -e 'all(.[]; (.id | test("^[a-z0-9-]+$")) and (.rule | length) > 20 and (.from | length) > 5)' "$ROOT/qa/screener.rules.json" >/dev/null && ok "every screener rule has an id, a sentence and where it comes from" || bad "every screener rule has an id, a sentence and where it comes from"
+missing=""; while IFS=$'\t' read -r file text; do grep -qF "$text" "$ROOT/$file" || missing="$missing [$file: $text]"; done < <(jq -r '.[] | .from | capture("^(?<f>[^:]+): (?<t>.*)$") | [.f, .t] | @tsv' "$ROOT/qa/screener.rules.json")
+[ -z "$missing" ] && ok "every screener rule still matches a line in the crew's instructions" || bad "every screener rule still matches a line in the crew's instructions" "$missing"
 for v in '[]' '[""]' '"one"' '[1]'; do
   jq --argjson v "$v" '.done_items = $v' "$(contract good)" > "$T/bad.json"
   out="$("$QA" validate "$T/bad.json" 2>&1)" && bad "refuses done_items $v" || ok "refuses done_items $v"

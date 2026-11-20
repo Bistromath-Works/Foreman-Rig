@@ -52,7 +52,7 @@ gitq() { git -c user.email=golden@example.invalid -c user.name=golden -c init.de
 # Play one task. Appends one JSON record to $records.
 play() {
   local name="$1" t="$GOLDEN/tasks/$1" r="$W/src/golden-$1" c="$W/$1.contract.json" id run g s
-  local screen="not asked" verdict gate by items=""
+  local screen="not asked" verdict gate by items="" flags=""
   [ -f "$t/task.json" ] || die "no task '$name' in $GOLDEN/tasks"
   mkdir -p "$r"; cp -R "$t/base/." "$r/"
   gitq -C "$r" init -q; gitq -C "$r" add -A; gitq -C "$r" commit -qm base
@@ -67,6 +67,7 @@ play() {
   if [ "$screener" -eq 1 ]; then
     s=0; "$ROOT/scripts/screen" check "$c" >"$W/$name.screen.txt" 2>&1 || s=$?
     items="$(tail -n 1 "$QA_HOME/screener/log.jsonl" 2>/dev/null | jq -c --arg i "golden-$name" 'select(.issue == $i) | [.items[] | {item, p_addressed}]' 2>/dev/null || true)"
+    flags="$(tail -n 1 "$QA_HOME/screener/log.jsonl" 2>/dev/null | jq -c --arg i "golden-$name" 'select(.issue == $i) | .flags // {}' 2>/dev/null || true)"
     case "$s" in 3) screen="send back" ;; 0) screen="$(grep -q '^screener skipped' "$W/$name.screen.txt" && echo skipped || echo "no objection")" ;; *) screen="error" ;; esac
   fi
 
@@ -83,31 +84,37 @@ play() {
   verdict="$(jq -r .verdict "$run/verdict.json")"; gate="$(jq -r '.gate // ""' "$run/verdict.json")"
   if [ "$screen" = "send back" ]; then by=screener; elif [ "$verdict" != pass ]; then by="$gate"; else by=""; fi
 
-  jq -cn --arg n "$name" --arg sc "$screen" --arg v "$verdict" --arg g "$gate" --arg by "$by" --slurpfile t "$t/task.json" --argjson items "${items:-[]}" \
+  jq -cn --arg n "$name" --arg sc "$screen" --arg v "$verdict" --arg g "$gate" --arg by "$by" --slurpfile t "$t/task.json" --argjson items "${items:-[]}" --argjson flags "${flags:-{\}}" \
         --argjson gates "$(for g in "${GATES[@]}"; do [ -f "$run/gates/$g.json" ] && jq -c '{(.gate): {status, note}}' "$run/gates/$g.json"; done | jq -cs 'add // {}')" '
     $t[0] as $t
     | ($t.expect.verdict == "pass") as $control
-    | {task:$n, defect:$t.defect, screener:$sc, screener_items:$items, verdict:$v, stopped_at:$g, caught_by:$by, gates:$gates,
+    | {task:$n, defect:$t.defect, screener:$sc, screener_items:$items, screener_flags:$flags, verdict:$v, stopped_at:$g, caught_by:$by, gates:$gates,
        expected:$t.expect,
+       flagged:([$flags.rules_flagged[]?.id] | sort),
+       flags_as_expected:(if $sc == "not asked" or $sc == "skipped" or $sc == "error" then null
+                          else ([$flags.rules_flagged[]?.id] | sort) == (($t.expect.flags // []) | sort) end),
        outcome:(if $control then (if $by == "" then "passed, as it should" else "false alarm" end)
                 elif $by == "" then "missed"
                 elif ($t.expect.caught_by | index($by)) != null then "caught"
                 else "caught elsewhere" end),
        as_expected:(if $control then $by == ""
-                    else ($t.expect.caught_by | index($by)) != null and ($sc == "send back" or $v == $t.expect.verdict) end)}' >>"$records"
+                    else ($t.expect.caught_by | index($by)) != null and ($sc == "send back" or $v == $t.expect.verdict) end)}
+    | .as_expected = (.as_expected and (.flags_as_expected != false))' >>"$records"
 }
 
 for n in "${names[@]}"; do play "$n"; done
 
 say "Golden tasks: the QA gates in code$([ "$screener" -eq 1 ] && echo ', plus the live screener'). Prober and test auditor are stood in for."
 say ""
-jq -r '[.task, .defect, .outcome + (if .caught_by != "" then " by " + .caught_by else "" end),
+jq -r '[.task, .defect, .outcome + (if .caught_by != "" then " by " + .caught_by else "" end) + (if (.flagged | length) > 0 then "; flagged " + (.flagged | join(",")) else "" end),
         (if .as_expected then "as expected" else "NOT as expected (expected: " + (.expected.caught_by | if length == 0 then "a pass" else join(" or ") end) + ")" end)] | @tsv' "$records" \
-  | awk -F'\t' 'BEGIN { printf "%-18s %-36s %-26s %s\n", "task", "planted defect", "result", "" } { printf "%-18s %-36s %-26s %s\n", $1, $2, $3, $4 }'
+  | awk -F'\t' 'BEGIN { printf "%-18s %-36s %-44s %s\n", "task", "planted defect", "result", "" } { printf "%-18s %-36s %-44s %s\n", $1, $2, $3, $4 }'
 say ""
 jq -rs '
   (map(select(.expected.verdict != "pass"))) as $d | (map(select(.expected.verdict == "pass"))) as $c
-  | "score: caught \($d | map(select(.caught_by != "")) | length) of \($d | length) planted defects; \($c | map(select(.caught_by != "")) | length) false alarms on \($c | length) clean task\(if ($c | length) == 1 then "" else "s" end)",
+  | "score: caught \($d | map(select(.caught_by != "")) | length) of \($d | length) planted defects; \($c | map(select(.caught_by != "")) | length) false alarms on \($c | length) task\(if ($c | length) == 1 then "" else "s" end) the gates should pass",
+    (map(select(.flags_as_expected != null)) as $f | if ($f | length) == 0 then empty else
+      "screener rule flags: \([$f[] | (.expected.flags // [])[] as $x | select(.flagged | index($x))] | length) of \([$f[] | (.expected.flags // [])[]] | length) planted rule breaks flagged; \([$f[] | .flagged[] as $x | select(((.expected.flags // []) | index($x)) | not)] | length) false flags" end),
     (($d | map(select(.caught_by == "")) | map(.task + " (" + .defect + ")")) | if length > 0 then "missed: " + join(", ") else empty end),
     ((map(select(.as_expected | not)) | map(.task)) | if length > 0 then "not as expected: " + join(", ") else "every task came out as expected" end)' "$records"
 [ -z "$json_out" ] || jq -s . "$records" >"$json_out"

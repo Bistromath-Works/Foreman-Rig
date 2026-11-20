@@ -323,6 +323,7 @@ cmd_new() {
   run="$QA_HOME/runs/$id"
   mkdir -p "$run"/{gates,logs,evidence,probe,src}
   cp "$c" "$run/contract.json"; cp "$rf" "$run/repo.json"; printf '%s' "$slug" >"$run/slug"
+  [ ! -f "${c%.json}.screen.json" ] || cp "${c%.json}.screen.json" "$run/screen.json"
   printf '%s' "${box:+$box
 }" >"$run/box"
   echo $(( $(date +%s) + 60 * $(jq -r .budget.wall_minutes "$c") )) >"$run/deadline"
@@ -665,6 +666,12 @@ cmd_verdict() {
       [ -f "$run/gates/$g.json" ] && jq -r '"| \(.gate) | \(.status) | \(.note) |"' "$run/gates/$g.json" || say "| $g | not run | |"
     done
     say ""
+    if [ -f "$run/screen.json" ] && jq -e '((.flags.rules_flagged // []) + (.flags.riskiest // [])) | length > 0' "$run/screen.json" >/dev/null 2>&1; then
+      say "## Screener flags (a model's judgment, not a gate; for the reviewer)"
+      jq -r '(.flags.rules_flagged[]? | "- rule \(.id) may be broken (\(.p_broken * 100 | round)%): \(.rule)"),
+             (.flags.riskiest[]? | "- read first: \(.file) \(.first_line | .[0:60] | gsub("[`|]"; " ")) (risk \(.risk * 10 | round / 10) of 3)")' "$run/screen.json"
+      say ""
+    fi
     say "## Evidence"
     say "- Logs: $run/logs/"
     say "- Recordings and screenshots: $run/evidence/"
@@ -728,14 +735,17 @@ cmd_send() {
   elif [ -n "${2:-}" ]; then usage
   else
     local sc=0
-    QA_HOME="$QA_HOME" QA_REPOS="$QA_REPOS" "$ROOT/scripts/screen" check "$c" || sc=$?
-    [ "$sc" -ne 3 ] || die "not sent to QA: the screener sent the job back (see above). Work on those items and send again.
-If the screener is wrong, send with the reason: scripts/qa send $c --no-screen \"<where the item is done>\""
+    SCREEN_OUT="$QA_HOME/.screen.$$.json"; rm -f "$SCREEN_OUT"
+    SCREEN_OUT="$SCREEN_OUT" QA_HOME="$QA_HOME" QA_REPOS="$QA_REPOS" "$ROOT/scripts/screen" check "$c" || sc=$?
+    [ "$sc" -ne 3 ] || { rm -f "$SCREEN_OUT"; die "not sent to QA: the screener sent the job back (see above). Work on those items and send again.
+If the screener is wrong, send with the reason: scripts/qa send $c --no-screen \"<where the item is done>\""; }
     [ "$sc" -eq 0 ] || say "warning: the screener stopped with an error ($sc); sending to QA without it"
   fi
   mkdir -p "$QA_HOME/inbox"
   f="$QA_HOME/inbox/$(jq -r .issue "$c")-$(date +%Y%m%d-%H%M%S).json"
   cp "$c" "$f"
+  # The screener's record travels beside the contract, so its flags reach the verdict.
+  [ ! -f "${SCREEN_OUT:-}" ] || mv "$SCREEN_OUT" "${f%.json}.screen.json"
   dest="qa-gatekeeper@$QA_RIG"
   rig queue create --destination "$dest" --gate qa --summary "QA $(jq -r .issue "$c"): try to break $(jq -r .candidate "$c")" \
     --body "contract: $f" --source "$(jq -r .reply_to "$c")" >/dev/null \

@@ -1,0 +1,14 @@
+[
+  {"id": "no-secrets",
+   "rule": "The change adds no API key, password, access token or other secret value to any file.",
+   "from": "CULTURE.md: Never print, copy or commit secrets."},
+  {"id": "no-test-weakening",
+   "rule": "The change does not weaken a test that already existed: it removes no assertion, loosens no expected value and skips or deletes no existing test.",
+   "from": "agents/coder/guidance/role.md: Never edit a test to make it pass"},
+  {"id": "outside-facts-sourced",
+   "rule": "Every fee, rate, limit or legal rule from outside the code that the change adds has a comment next to it naming where it came from.",
+   "from": "agents/owner/guidance/role.md: Outside facts carry their source."},
+  {"id": "model-output-validated",
+   "rule": "Wherever the change uses text or data returned by an AI model, code checks that output before anything else uses it.",
+   "from": "agents/owner/guidance/role.md: Model output is validated in code."}
+]

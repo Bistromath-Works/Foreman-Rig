@@ -14,7 +14,7 @@ bad() { failn=$((failn+1)); printf 'FAIL %s\n' "$1"; [ -z "${2:-}" ] || printf '
 cmp -s "$T/a.txt" "$T/b.txt" && ok "a second run prints exactly the same" || bad "a second run prints exactly the same" "$(diff "$T/a.txt" "$T/b.txt" | head -5)"
 [ "$(jq -c '[.[] | [.task, .verdict, .caught_by]]' "$T/a.json")" = "$(jq -c '[.[] | [.task, .verdict, .caught_by]]' "$T/b.json")" ] \
   && ok "a second run records the same verdicts" || bad "a second run records the same verdicts"
-grep -q '^score: caught 8 of 8 planted defects; 0 false alarms on 1 clean task$' "$T/a.txt" && ok "the score line is the known baseline" || bad "the score line is the known baseline" "$(grep '^score' "$T/a.txt")"
+grep -q '^score: caught 8 of 8 planted defects; 0 false alarms on 2 tasks the gates should pass$' "$T/a.txt" && ok "the score line is the known baseline" || bad "the score line is the known baseline" "$(grep '^score' "$T/a.txt")"
 n="$(wc -l <"$ROOT/golden/order" | tr -d ' ')"
 [ "$n" -ge 5 ] && [ "$n" -le 10 ] && [ "$(jq length "$T/a.json")" = "$n" ] && ok "five to ten tasks, all played ($n)" || bad "five to ten tasks, all played" "$n"
 for d in "$ROOT"/golden/tasks/*/; do
