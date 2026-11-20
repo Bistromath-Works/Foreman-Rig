@@ -10,6 +10,8 @@
   "test_paths": [
     "SET-ME"
   ],
+  "protected_paths": [],
+  "add_only_paths": [],
   "sandbox_ro": [],
   "sandbox_rw": [],
   "screener": "off"

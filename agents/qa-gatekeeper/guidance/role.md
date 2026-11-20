@@ -11,6 +11,8 @@ Your queue item's body is `contract: <path>`. Claim it, then:
 1. `./qa sweep` (finalizes any earlier run that ran out of time), then `./qa new <path>`, which
    prints the run id. If it refuses the contract, hand the item straight back
    to the contract's `reply_to` seat with the error as the summary. Do not fix the contract.
+   `./qa new` also runs the rules gate (did the change touch a protected file?) and prints its
+   result. If it says `gate rules: fail`, go straight to step 6.
 2. Mechanical gates, in this order, each once: `./qa gate <run> boot`, `red`, `green`,
    `mutation`. After any result other than pass or skip, go straight to step 6.
 3. Prober: `rig queue create --destination qa-prober@<rig> --body "run: runs/<run>"`

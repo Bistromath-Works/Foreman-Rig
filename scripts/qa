@@ -11,6 +11,7 @@
 # QA side (the gatekeeper):
 #   scripts/qa new <contract.json>     start a run: check the contract, clone, print the run id
 #   scripts/qa gate <run> <gate>       run one gate: boot red green mutation probe suite audit
+#                                      (the rules gate runs by itself when the run starts)
 #   scripts/qa try <run> <file>        prober only: run one probe check on a throwaway copy
 #   scripts/qa verdict <run>           compute the verdict from the gate files, clean up the clones
 #   scripts/qa sweep                   finalize runs whose budget ran out with no verdict
@@ -28,7 +29,7 @@ QA_HOME="${QA_HOME:-$HOME/.foreman-qa}"
 QA_RIG="${QA_RIG:-foreman-qa}"
 QA_REPOS="${QA_REPOS:-$ROOT/qa/repos}"
 RIG_FILE="$ROOT/rig.qa.yaml"
-GATES=(boot red green mutation probe suite audit)
+GATES=(rules boot red green mutation probe suite audit)
 REPO_KEYS=(setup_cmd boot_cmd check_cmd suite_cmd smoke_cmd mutation_cmd teardown_cmd)
 
 die() { printf 'qa: %s\n' "$*" >&2; exit 1; }
@@ -311,6 +312,10 @@ cmd_new() {
   done
   [ -z "$(jq -r .repro_check "$c")" ] || [ -n "$(rget "$rf" assertion_pattern)" ] \
     || die "$rf has no assertion_pattern; it is required when a contract has a repro check"
+  for k in protected_paths add_only_paths; do
+    jq -e --arg k "$k" '.[$k] // [] | type == "array" and all(.[]; type == "string" and length > 0)' "$rf" >/dev/null \
+      || die "$rf: $k must be a list of paths"
+  done
   local box; box="$(check_box "$rf" "$repo")" || exit 1
   local n=1 stem; stem="$(jq -r .issue "$c")-$(date +%Y%m%d-%H%M%S)"; id="$stem"
   mkdir -p "$QA_HOME/runs"
@@ -335,6 +340,8 @@ cmd_new() {
   g -C "$run/src/repo" rev-parse HEAD >"$run/candidate.sha"
   # Read-only from here: drop the remote so nothing can be pushed back.
   g -C "$run/src/repo" remote remove origin
+  # The rules gate needs no seat and runs no project code, so it runs here, once, for every run.
+  gate_rules "$run" >&2
   say "$id"
 }
 
@@ -370,6 +377,33 @@ red_ok() {
 # Path $2 inside tree $1 stays inside it once symlinks are followed (nothing written outside).
 inside() { local t r; t="$(realpath -m "$1")"; r="$(realpath -m "$1/$2")"; [[ "$r" == "$t"/* ]]; }
 
+
+# The project's rules about which files a job may touch, checked on the list of changed files
+# alone. No project code runs. Settings, in the repo's QA settings file:
+#   protected_paths  nothing under these may be added, changed or deleted
+#   add_only_paths   new files are fine; an existing file may not be changed or deleted
+# Both take git pathspecs. A repo with neither set skips this gate, and says so.
+gate_rules() {
+  local run="$1" base prot=() add=() n
+  base="$(cat "$run/base.sha")"
+  mapfile -t prot < <(jq -r '.protected_paths[]? // empty' "$run/repo.json")
+  mapfile -t add < <(jq -r '.add_only_paths[]? // empty' "$run/repo.json")
+  if [ "${#prot[@]}" -eq 0 ] && [ "${#add[@]}" -eq 0 ]; then
+    record "$run" rules skip "this repo has no protected or add-only paths set"; return
+  fi
+  : >"$run/logs/rules.log"
+  if [ "${#prot[@]}" -gt 0 ]; then
+    g -C "$run/src/repo" diff --no-renames --name-status "$base" HEAD -- "${prot[@]}" | sed 's/^/protected\t/' >>"$run/logs/rules.log" \
+      || { record "$run" rules fail "could not compare the candidate with base for protected_paths"; return; }
+  fi
+  if [ "${#add[@]}" -gt 0 ]; then
+    g -C "$run/src/repo" diff --no-renames --name-status --diff-filter=a "$base" HEAD -- "${add[@]}" | sed 's/^/add-only\t/' >>"$run/logs/rules.log" \
+      || { record "$run" rules fail "could not compare the candidate with base for add_only_paths"; return; }
+  fi
+  n="$(wc -l <"$run/logs/rules.log" | tr -d ' ')"
+  if [ "$n" -eq 0 ]; then record "$run" rules pass "no protected file touched"
+  else record "$run" rules fail "$n file(s) changed that the project's rules protect: $(cut -f3 "$run/logs/rules.log" | head -n 5 | paste -sd, - | sed 's/,/, /g')$([ "$n" -le 5 ] || echo ', ...') (logs/rules.log)"; fi
+}
 
 gate_boot() {
   local run="$1" cmd e=0 o

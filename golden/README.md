@@ -24,11 +24,9 @@ project is in here.
 | `narrowed-fix` | The fix handles only part of the problem | probe gate |
 | `untouched-item` | A done-condition item was never worked on | screener, else probe gate |
 | `breaks-other` | The fix breaks something else | suite gate |
-| `rule-broken` | The change deletes a check from an existing test | Nothing yet |
+| `rule-broken` | The change deletes a check from an existing, protected test | rules gate |
 
-Baseline score: 7 of 8 planted defects caught, no false alarm on the clean task. The one miss,
-`rule-broken`, is expected: nothing checks a change against the project's rules yet (CF-2). When
-that exists, change `caught_by` in its `task.json` and the baseline becomes 8 of 8.
+Baseline score: 8 of 8 planted defects caught, no false alarm on the clean task.
 
 ## What a run does, and what it does not
 

@@ -32,4 +32,7 @@ audit_every: 5
 
 # Optional: the QA rig's command (path to scripts/qa in a Foreman checkout), or none. When set,
 # the owner sends every candidate to the QA rig before the checker. See qa/README.md.
+# With a QA rig, protected paths are enforced there, in code: list them as protected_paths and
+# add_only_paths in the repo's QA settings file (see qa/README.md). The list above is then what
+# the crew reads; the QA settings are what a program checks.
 qa_cmd: none

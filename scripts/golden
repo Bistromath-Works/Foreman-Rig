@@ -24,7 +24,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GOLDEN="$ROOT/golden"
 QA="$ROOT/scripts/qa"
-GATES=(boot red green mutation probe suite audit)
+GATES=(rules boot red green mutation probe suite audit)
 
 die() { printf 'golden: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -75,7 +75,7 @@ play() {
   for g in "${GATES[@]}"; do
     [ "$g" != probe ] || cp -R "$t/probe/." "$run/probe/"                      # stand-in for the prober
     [ "$g" != audit ] || printf 'coverage: covered\nstand-in for the test auditor (scripts/golden)\n' >"$run/audit.md"
-    "$QA" gate "$id" "$g" >/dev/null 2>&1 || true
+    [ "$g" = rules ] || "$QA" gate "$id" "$g" >/dev/null 2>&1 || true        # the rules gate ran when the run started
     s="$(jq -r .status "$run/gates/$g.json" 2>/dev/null || echo missing)"
     case "$s" in pass|skip) ;; *) break ;; esac
   done
@@ -94,7 +94,6 @@ play() {
                 elif ($t.expect.caught_by | index($by)) != null then "caught"
                 else "caught elsewhere" end),
        as_expected:(if $control then $by == ""
-                    elif ($t.expect.caught_by | index("rules")) != null then $by == ""     # a known gap: nothing checks rules yet
                     else ($t.expect.caught_by | index($by)) != null and ($sc == "send back" or $v == $t.expect.verdict) end)}' >>"$records"
 }
 

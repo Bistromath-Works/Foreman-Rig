@@ -521,6 +521,36 @@ out="$("$QA" new "$T/furl.json" 2>&1)"; [[ "$out" == *"file://"* && "$out" != CF
 cp "$T/keep.json" "$QA_REPOS/fixture.json"
 SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
 
+echo "# the rules gate"
+cp "$QA_REPOS/fixture.json" "$T/keep.json"
+id="$(new "$(contract good)")"
+same "a repo with no protected paths skips the rules gate, and says so" "$(jq -r '.status + ": " + .note' "$QA_HOME/runs/$id/gates/rules.json")" "skip: this repo has no protected or add-only paths set"
+git -C "$R" checkout -q -b rbase "$BASE"; mkdir -p "$R/migrations" "$R/ci"; echo one > "$R/migrations/001.sql"; echo build > "$R/ci/build.yml"
+git -C "$R" add -A; git -C "$R" commit -qm rbase; RBASE="$(git -C "$R" rev-parse HEAD)"
+rcand() { # rcand <name> <shell snippet run in the repo>
+  git -C "$R" checkout -q -b "$1" "$RBASE"
+  printf 'def full_name(first, middle, last):\n    return " ".join(p for p in (first, middle, last) if p)\n' > "$R/name.py"
+  printf '%s\n' "$repro" > "$R/tests/test_empty_middle.py"; ( cd "$R" && eval "$2" ); git -C "$R" add -A; git -C "$R" commit -qm "$1"; git -C "$R" checkout -q main
+  jq --arg b "$RBASE" '.base = $b' "$(contract "$1")" > "$T/$1.json"; printf '%s' "$T/$1.json"
+}
+jq '.protected_paths = ["ci/"] | .add_only_paths = ["migrations/"]' "$T/keep.json" > "$QA_REPOS/fixture.json"
+id="$(new "$(rcand r-clean 'echo two > migrations/002.sql')")"
+same "adding a new file to an add-only folder passes the rules gate" "$(jq -r .status "$QA_HOME/runs/$id/gates/rules.json")" "pass"
+same "and the run goes on to a full pass" "$(full_run "$id" good 'coverage: covered')" "pass -"
+grep -q '| rules | pass' "$QA_HOME/runs/$id/verdict.md" && ok "the verdict table shows the rules gate" || bad "the verdict table shows the rules gate"
+for pair in "r-prot-edit|echo changed > ci/build.yml|ci/build.yml" "r-prot-add|echo new > ci/extra.yml|ci/extra.yml" "r-prot-del|git rm -q ci/build.yml|ci/build.yml" "r-add-edit|echo changed > migrations/001.sql|migrations/001.sql" "r-add-del|git rm -q migrations/001.sql|migrations/001.sql"; do
+  IFS='|' read -r n cmd file <<<"$pair"
+  id="$(new "$(rcand "$n" "$cmd")")"; run="$QA_HOME/runs/$id"
+  [ "$(jq -r .status "$run/gates/rules.json")" = fail ] && jq -r .note "$run/gates/rules.json" | grep -q "$file" \
+    && ok "rules gate refuses: $n" || bad "rules gate refuses: $n" "$(cat "$run/gates/rules.json")"
+done
+out="$("$QA" gate "$id" boot 2>&1)"; [[ "$out" == *"'rules' did not pass"* ]] && ok "nothing runs after a failed rules gate" || bad "nothing runs after a failed rules gate" "$out"
+"$QA" verdict "$id" >/dev/null 2>&1; same "a broken rule is a fail at the rules gate" "$(jq -r '.verdict + " " + .gate' "$QA_HOME/runs/$id/verdict.json")" "fail rules"
+jq '.protected_paths = "ci/"' "$T/keep.json" > "$QA_REPOS/fixture.json"
+out="$("$QA" new "$(contract good)" 2>&1)" && bad "refuses protected_paths that is not a list" "$out" || ok "refuses protected_paths that is not a list"
+cp "$T/keep.json" "$QA_REPOS/fixture.json"
+SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
+
 echo "# contracts"
 c="$(contract good)"
 for pair in 'issue|"cf 9"' 'issue|"../x"' 'repro_check|"tests/x.py; rm -rf ~"' 'repro_check|"../outside.py"' 'candidate|"main; reboot"' 'reply_to|"nobody"' 'repo|"--upload-pack=x"' 'budget|{"wall_minutes":0,"tokens":1}'; do
