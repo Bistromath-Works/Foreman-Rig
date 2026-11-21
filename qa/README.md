@@ -128,7 +128,7 @@ the candidate's diff? If an item looks untouched, the send is refused and the it
 | It can only send back. It never grants a pass and never replaces a gate | `scripts/screen` has two outcomes, "send back" and "no objection"; the gates run either way after "no objection" |
 | Its answer is a judgment | Every line it prints and logs says so |
 | The model's answer is checked in code | An answer that is not a number from 0 to 1 for every item is thrown away |
-| If it cannot run, the job goes on | Off, no key, no threshold, service down, diff over 60,000 characters: logged as skipped, sent to QA |
+| If it cannot run, the job goes on | Off, no key, no threshold, service down, diff over 200,000 characters: logged as skipped, sent to QA |
 | Thresholds are stored per model | `qa/screener.thresholds.json`; a model with no entry does not screen. Each entry says what it was measured on |
 | The Lead can overrule it, with a reason | `scripts/qa send <contract> --no-screen "<where the item is done>"`, logged |
 

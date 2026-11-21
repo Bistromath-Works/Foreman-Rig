@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Screener size limit raised to 200,000 characters (CF-14).** The first real job was 98,000
+  characters and was skipped three times at the old limit of 60,000. Jev answers a change that
+  size in about a second. `SCREEN_MAX_DIFF_CHARS` overrides the limit.
+
 - **Fixes from the review of the 2026-11-20 work (CF-22).** No high-severity findings; the
   medium ones are fixed, each with a test.
   - Command guard: sees through git's options (`git -C app push`), redirects (`git push>log`)
