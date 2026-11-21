@@ -28,7 +28,7 @@ THRESHOLDS="${SCREEN_THRESHOLDS:-$ROOT/qa/screener.thresholds.json}"
 RULES="${SCREEN_RULES:-$ROOT/qa/screener.rules.json}"
 MAX_HUNKS=40      # more changed hunks than this: no risk ranking (the other checks still run)
 TOP_HUNKS=5
-MAX_DIFF_CHARS=60000
+MAX_DIFF_CHARS="${SCREEN_MAX_DIFF_CHARS:-200000}"   # the first real job was 98,000 characters; Jev answered that in a second
 LOG="$QA_HOME/screener/log.jsonl"
 
 die() { printf 'screen: %s\n' "$*" >&2; exit 1; }

@@ -737,6 +737,8 @@ same "hunks keep a removed line that looks like a header, name a deleted file by
 mkdir -p "$QA_HOME/screener"; rm -f "$QA_HOME/screener/log.jsonl"; mkdir "$QA_HOME/screener/log.jsonl"; n="$(queued)"
 out="$(send "$c2" --no-screen "checked by hand")"; same "an override that cannot be logged still sends the job to QA" "$(queued)" "$((n+1))"
 rmdir "$QA_HOME/screener/log.jsonl"
+jq '.screener = "openrouter"' "$T/keep.json" > "$QA_REPOS/fixture.json"; n="$(queued)"
+out="$(SCREEN_MAX_DIFF_CHARS=50 send "$c2")"; same "a change over the size limit skips the screener and still goes to QA" "$(queued) $(last_log .reason | cut -c1-12)" "$((n+1)) diff is over"
 cp "$T/keep.json" "$QA_REPOS/fixture.json"
 SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
 
