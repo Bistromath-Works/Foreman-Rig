@@ -34,6 +34,10 @@ out="$("$CLU" rulebook 2>&1)" && ok "the rulebook is within its size cap" || bad
 missing=""; for f in "$ROOT"/CULTURE.md "$ROOT"/qa/CULTURE.md "$ROOT"/agents/*/guidance/role.md; do jq -e --arg f "${f#"$ROOT"/}" '.files | index($f)' "$ROOT/rulebook.json" >/dev/null || missing="$missing ${f#"$ROOT"/}"; done
 [ -z "$missing" ] && ok "every instruction file a seat is given is in the rulebook" || bad "every instruction file a seat is given is in the rulebook" "$missing"
 
+[ "$(jq '[.must_keep[] | length] | add' "$ROOT/rulebook.json")" -ge 20 ] && "$CLU" rulebook 2>&1 | grep -q 'must-keep lines, all present' && ok "every must-keep line is in the rulebook" || bad "every must-keep line is in the rulebook" "$("$CLU" rulebook 2>&1 | tail -3)"
+mkdir -p "$T/rb/scripts" "$T/rb/agents" "$T/rb/qa"; cp "$ROOT/scripts/clu" "$T/rb/scripts/"; cp "$ROOT/rulebook.json" "$ROOT/CULTURE.md" "$T/rb/"; cp -R "$ROOT/agents/." "$T/rb/agents/"; cp "$ROOT/qa/CULTURE.md" "$T/rb/qa/"
+sed -i 's/\*\*You never approve your own work\.\*\*/You may approve your own work when sure./' "$T/rb/agents/owner/guidance/role.md"
+out="$("$T/rb/scripts/clu" rulebook 2>&1)"; [ $? -ne 0 ] && [[ "$out" == *"lost a line it must keep"* && "$out" == *"You never approve your own work"* ]] && ok "rewording that loses a must-keep line fails, and names the line" || bad "rewording that loses a must-keep line fails, and names the line" "$out"
 answer agents/owner/guidance/role.md "$OLD" '   the job does not claim). End with a "Not tested" list, or `none`. Vague promises waste a round.' "$J3"
 out="$(audit)"; same "a habit seen in three jobs with an exact, same-size edit becomes a proposal" "$(last .status)" "proposed"
 p="$(ls -t "$T"/out/*.patch | head -1)"; grep -q '^-   the job does not claim). Add what you did not test' "$p" && grep -q '^+.*Not tested' "$p" && ok "the proposal comes with a patch" || bad "the proposal comes with a patch" "$(cat "$p" 2>&1)"

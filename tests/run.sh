@@ -658,6 +658,47 @@ sed -i 's|^banned_cmds: .*|banned_cmds: vercel, supabase|' "$P/.foreman/project.
 out="$(PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'must be a list' && ok "a banned_cmds the program cannot read is refused with the right form shown" || bad "bad banned_cmds" "$out"
 teardown
 
+# --- builder task files ---
+setup
+J="$P/.foreman/jobs/fmn-20261121-0900"; mkdir -p "$J"; mkdir -p "$P/src"; printf '.foreman/\n' >> "$P/.git/info/exclude"
+out="$("$F" task "$P" fmn-20261121-0900 1 2>&1)"; TF="$J/ctx/code-1.task.md"
+[ -f "$TF" ] && grep -q '^## Rules you check by eye$' "$TF" && grep -q 'rule 2: path/to/file.ts:14' "$TF" && ok "task writes a skeleton with both rule lists and the result format" || bad "task skeleton" "$out"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'FILL-ME left' && ok "an unfilled task file is not ready" || bad "unfilled task" "$out"
+fill_task() { # fill_task <by-eye lines> <examples>
+  awk -v eye="$1" -v ex="$2" '
+    /^# code-/ { print "# code-1: screen files (job x)"; next }
+    /^FILL-ME: two or three/ { print "Sort each picked file into accepted or rejected."; next }
+    /^- `FILL-ME`/ { print "- `src/batch.ts`"; next }
+    /^1\. FILL-ME/ { print "1. Export NOT_PDF."; print "2. A file that is not a PDF gets NOT_PDF."; next }
+    /^## Rules you check by eye/ { print; sec="eye"; next }
+    /^## Examples/ { print; sec="ex"; next }
+    /^## / { sec="" }
+    $0 == "FILL-ME" && sec == "eye" { print eye; next }
+    $0 == "FILL-ME" && sec == "ex" { print ex; next }
+    /^`FILL-ME`/ { print "`timeout 120 true`"; next }
+    { print }' "$TF" > "$TF.new" && mv "$TF.new" "$TF"; }
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "none"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'need an example' && ok "a check-by-eye rule without an example is refused" || bad "by-eye needs example" "$out"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "$(printf '3. a\n4. b\n5. c\n6. d')" "/** like this */"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'at most 3' && ok "more than three check-by-eye rules are refused" || bad "by-eye cap" "$out"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "4. numbered wrong." "/** like this */"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'numbered 1, 2, 3' && ok "rules that skip a number are refused" || bad "rule numbering" "$out"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "/** Sorts picked files. */"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -eq 0 ] && [ "$(jq -c '[.rules,.by_eye,.proved,.eye,.files]' "$J/ctx/code-1.check.json")" = '[3,1,[1,2],[3],["src/batch.ts"]]' ] \
+  && ok "a filled task file is ready, and its rules are recorded" || bad "task ready" "$out"
+R="$J/out/code-1.md"; printf '/** Sorts picked files. */\nexport const NOT_PDF = 1\n' > "$P/src/batch.ts"
+res() { printf 'kind: code\nstatus: %s\ncommand: x\nresult: ok\nfiles: src/batch.ts\n' "$1" > "$R"; shift; printf '%s\n' "$@" >> "$R"; "$F" result-check "$P" fmn-20261121-0900 1 2>&1; }
+out="$(res done 'rule 1: command' 'rule 2: command' 'rule 3: src/batch.ts:1')"; [ $? -eq 0 ] && echo "$out" | grep -q 'still yours to check' && ok "a result with evidence for every rule passes, and says the rules are still the owner's to check" || bad "good result" "$out"
+out="$(res done 'rule 1: command' 'rule 2: command' 'rule 3: command')"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 3:.*needs a file and line' && ok "a check-by-eye rule answered with 'command' is refused" || bad "eye rule needs a line" "$out"
+out="$(res done 'rule 1: command' 'rule 3: src/batch.ts:1')"; [ $? -ne 0 ] && echo "$out" | grep -q "rule 2: no 'rule 2:' line" && ok "a rule with no answer is refused" || bad "missing rule" "$out"
+out="$(res done 'rule 1: command' 'rule 2: command' 'rule 3: src/batch.ts:99')"; [ $? -ne 0 ] && echo "$out" | grep -q 'has no line 99' && ok "a cited line that does not exist is refused" || bad "bad line" "$out"
+out="$(res done 'rule 1: command' 'rule 2: command' 'rule 3: src/other.ts:1')"; [ $? -ne 0 ] && echo "$out" | grep -q "not one of the task's files" && ok "evidence in a file outside the task is refused" || bad "outside file evidence" "$out"
+echo stray > "$P/src/stray.ts"
+out="$(res done 'rule 1: command' 'rule 2: command' 'rule 3: src/batch.ts:1')"; [ $? -ne 0 ] && echo "$out" | grep -q "changed outside the task's files: src/stray.ts" && ok "a file changed outside the task's list is named" || bad "stray file" "$out"
+rm "$P/src/stray.ts"
+out="$(res stuck 'notes: rule 3 is unclear')"; [ $? -eq 0 ] && echo "$out" | grep -q 'stuck' && [ "$(jq -r .status "$J/out/code-1.check.json")" = stuck ] && ok "a stuck result is accepted as stuck" || bad "stuck result" "$out"
+teardown
+
 # --- retro and the lessons ledger ---
 setup
 J="$P/.foreman/jobs/fmn-20261120-0900"; mkdir -p "$J/ctx" "$J/out" "$T/qa/runs/r1" "$T/qa/screener"

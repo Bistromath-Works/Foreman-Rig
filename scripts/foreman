@@ -8,6 +8,9 @@
 #   scripts/foreman unstick <project> [--once]   press Enter on OpenRig messages left unsent (up starts it)
 #   scripts/foreman tracing <project> [--off]    send every seat's traces to Langfuse (keys from env)
 #   scripts/foreman bans    <project> [--off]    make every seat's runtime refuse the banned commands (up does this)
+#   scripts/foreman task    <project> <job-id> <n>          write the skeleton of builder task <n> for the owner to fill in
+#   scripts/foreman task-check   <project> <job-id> <n>     refuse a task file that is not ready to hand over
+#   scripts/foreman result-check <project> <job-id> <n>     check the builder's result against the task and the checkout
 #   scripts/foreman retro   <project> <job-id>   after a job: count how it went, write the retro task
 #   scripts/foreman lesson  <project> <job-id> <seat> <evidence-file> "<lesson>"   log one lesson (three per job at most)
 #   scripts/foreman habits  <project>            show the lessons ledger
@@ -31,7 +34,7 @@ PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_pa
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-usage() { sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # --- resolve the project and its rig file -------------------------------------------------
 
@@ -683,6 +686,154 @@ cmd_bans() {
   say "Restart the crew so every seat loads it: scripts/foreman down $PROJECT && scripts/foreman up $PROJECT"
 }
 
+# --- builder task files ---------------------------------------------------------------------
+# A builder task is all the builder knows, so what it must do and how it must report travel in
+# the task file itself, not in its role. The skeleton comes from here; the owner fills it in;
+# task-check refuses one that is not ready; result-check compares what came back with the task
+# and with the checkout. The builder's typical miss is a rule nothing proves, reported as met,
+# so rules are split into those the command proves and those checked by eye, the second kind is
+# capped, and each of those must be answered with the file and line that meets it.
+MAX_BY_EYE=3
+WARN_RULES=10
+
+task_paths() {
+  [[ "${1:-}" =~ ^[0-9]+$ ]] || die "the task number must be a number: ${1:-<none>}"
+  TASK="$JOB_DIR/ctx/code-$1.task.md"; RESULT="$JOB_DIR/out/code-$1.md"; TASK_META="$JOB_DIR/ctx/code-$1.check.json"
+}
+
+# Lines of section "## $2" of file $1 (up to the next "## "), without HTML comments.
+section() { awk -v h="## $2" '$0 == h {p=1; next} /^## / {p=0} p' "$1" | sed '/^<!--.*-->$/d'; }
+
+cmd_task() {
+  resolve "${1:-}"; job_dir "${2:-}"; task_paths "${3:-}"
+  [ ! -e "$TASK" ] || die "$TASK already exists; edit it, or delete it to start again"
+  mkdir -p "$JOB_DIR/ctx" "$JOB_DIR/out"
+  cat >"$TASK" <<TASKEOF
+# code-$3: FILL-ME a short title (job $JOB)
+
+## Goal
+FILL-ME: two or three plain sentences. What this piece does and why.
+
+## Files you may change
+<!-- one path per line, in backticks. The builder may change no other file. -->
+- \`FILL-ME\`
+
+## Rules the command proves
+<!-- numbered from 1, one rule per line. The command below fails if one of these is broken. -->
+1. FILL-ME
+
+## Rules you check by eye
+<!-- at most $MAX_BY_EYE, numbering continues. Nothing proves these, so each needs an example below. Write "none" if there are none. -->
+FILL-ME
+
+## Examples
+<!-- for each check-by-eye rule: the exact form wanted, two or three lines of code. Write "none" if there are no such rules. -->
+FILL-ME
+
+## Command that must pass
+\`FILL-ME\`
+
+## Your result
+Write \`$RESULT\` in exactly this shape, then hand back.
+
+\`\`\`
+kind: code
+status: done
+command: <the command you ran>
+result: <its last line>
+files: <every file you changed, separated by spaces>
+rule 1: command
+rule 2: path/to/file.ts:14
+notes: <anything the owner should know>
+\`\`\`
+
+- One \`rule N:\` line for every numbered rule above. No rule left out.
+- For a rule the command proves, write \`command\`, and only if the command passed.
+- For a check-by-eye rule, open the file and find the line where your code meets the rule. Write
+  that file and line number. Look before you write it: a line you did not open is a guess.
+- If you cannot point to the line, the rule is not met. Fix the code, or write \`status: stuck\`
+  and say in \`notes\` which rule and why. "Stuck" is a good answer. A rule reported met that is
+  not met is the worst one.
+TASKEOF
+  say "wrote $TASK"
+  say "Fill in every FILL-ME, then run: $ROOT/scripts/foreman task-check \"$PROJECT\" $JOB $3"
+}
+
+# Numbered rule lines ("N. text") of section $1 in the task file, as "N<TAB>text".
+rules_of() { section "$TASK" "$1" | sed -n 's/^\([0-9][0-9]*\)\.[[:space:]]\{1,\}\(.*\)$/\1\t\2/p'; }
+
+cmd_task_check() {
+  resolve "${1:-}"; job_dir "${2:-}"; task_paths "${3:-}"
+  [ -f "$TASK" ] || die "no task file $TASK; create it with: scripts/foreman task \"$PROJECT\" $JOB $3"
+  local problems=() warns=() files proved eye nums n want=1 ex cmd w
+  ! grep -q 'FILL-ME' "$TASK" || problems+=("$(grep -c 'FILL-ME' "$TASK") FILL-ME left in the file")
+  [ -n "$(section "$TASK" Goal | tr -d '[:space:]')" ] || problems+=("the Goal is empty")
+  files="$(section "$TASK" "Files you may change" | grep -o '`[^`]*`' | tr -d '`' | sort -u || true)"
+  [ -n "$files" ] || problems+=("no file is named under 'Files you may change' (put each path in backticks)")
+  [ "$(printf '%s\n' "$files" | grep -c . || true)" -le 3 ] || warns+=("more than three files: consider a smaller piece")
+  proved="$(rules_of "Rules the command proves")"; eye="$(rules_of "Rules you check by eye")"
+  [ -n "$proved$eye" ] || problems+=("no numbered rule")
+  nums="$(printf '%s\n%s\n' "$proved" "$eye" | cut -f1 | grep . || true)"
+  for n in $nums; do [ "$n" = "$want" ] || { problems+=("rules must be numbered 1, 2, 3 ... across both lists (found $n where $want was expected)"); break; }; want=$((want+1)); done
+  n="$(printf '%s\n' "$eye" | grep -c . || true)"
+  [ "$n" -le "$MAX_BY_EYE" ] || problems+=("$n check-by-eye rules; at most $MAX_BY_EYE. Turn the others into something the command proves (a test, a lint rule), or split the piece")
+  if [ "$n" -gt 0 ]; then
+    ex="$(section "$TASK" Examples | tr -d '[:space:]')"
+    [ -n "$ex" ] && [ "$ex" != none ] || problems+=("check-by-eye rules need an example of the exact form wanted, under Examples")
+  fi
+  [ "$((want-1))" -le "$WARN_RULES" ] || warns+=("$((want-1)) rules in one piece: the builder misses more as the list grows; consider splitting")
+  cmd="$(section "$TASK" "Command that must pass" | grep -o '`[^`]*`' | head -1 | tr -d '`' || true)"
+  [ -n "$cmd" ] || problems+=("no command under 'Command that must pass' (put it in backticks)")
+  grep -q '^## Your result$' "$TASK" && grep -q '^- One `rule N:` line for every numbered rule' "$TASK" || problems+=("the 'Your result' section from the skeleton is missing or was changed; it tells the builder how to report")
+  for w in "${warns[@]}"; do say "note: $w"; done
+  if [ "${#problems[@]}" -gt 0 ]; then
+    say "task code-$3 is NOT ready:"; for w in "${problems[@]}"; do say "  - $w"; done; exit 1
+  fi
+  jq -n --argjson rules "$((want-1))" --argjson eye "$n" --arg files "$files" \
+    --arg proved "$(printf '%s\n' "$proved" | cut -f1 | grep . | paste -sd' ' - || true)" --arg eyen "$(printf '%s\n' "$eye" | cut -f1 | grep . | paste -sd' ' - || true)" \
+    '{rules:$rules, by_eye:$eye, files:($files | split("\n") | map(select(length > 0))),
+      proved:($proved | split(" ") | map(select(length > 0) | tonumber)), eye:($eyen | split(" ") | map(select(length > 0) | tonumber))}' >"$TASK_META"
+  say "task code-$3 is ready: $((want-1)) rules, $n checked by eye, $(printf '%s\n' "$files" | grep -c .) file(s)"
+}
+
+cmd_result_check() {
+  resolve "${1:-}"; job_dir "${2:-}"; task_paths "${3:-}"
+  [ -f "$TASK_META" ] || die "run task-check on this task first (no $TASK_META)"
+  [ -f "$RESULT" ] || die "no result file $RESULT"
+  local status problems=() n ev f line changed extra
+  status="$(sed -n 's/^status:[[:space:]]*\([a-z]*\).*/\1/p' "$RESULT" | head -1)"
+  case "$status" in
+    stuck) jq -n '{status:"stuck", ok:true, problems:[]}' >"$JOB_DIR/out/code-$3.check.json"; say "result code-$3: the builder says it is stuck. Read its notes."; return 0 ;;
+    done) ;;
+    *) problems+=("no 'status: done' or 'status: stuck' line") ;;
+  esac
+  for n in $(jq -r '.proved[], .eye[]' "$TASK_META"); do
+    ev="$(sed -n "s/^rule $n:[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$RESULT" | head -1)"
+    if [ -z "$ev" ]; then problems+=("rule $n: no 'rule $n:' line"); continue; fi
+    if jq -e --argjson n "$n" '.proved | index($n)' "$TASK_META" >/dev/null && [ "$ev" = command ]; then continue; fi
+    [ "$ev" != command ] || { problems+=("rule $n: 'command' given, but nothing proves this rule; it needs a file and line"); continue; }
+    f="${ev%:*}"; line="${ev##*:}"
+    [[ "$ev" == *:* && "$line" =~ ^[0-9]+$ && "$line" -ge 1 ]] || { problems+=("rule $n: '$ev' is not a file and line (path/to/file:14)"); continue; }
+    jq -e --arg f "$f" '.files | index($f)' "$TASK_META" >/dev/null || { problems+=("rule $n: $f is not one of the task's files"); continue; }
+    [ -f "$PROJECT/$f" ] || { problems+=("rule $n: $f does not exist"); continue; }
+    [ "$line" -le "$(awk 'END {print NR}' "$PROJECT/$f")" ] || problems+=("rule $n: $f has no line $line")
+  done
+  # Everything changed in the checkout must be one of the task's files.
+  changed="$(git -C "$PROJECT" status --porcelain --untracked-files=all | sed 's/^...//; s/^.* -> //' | sort -u)"
+  extra="$(printf '%s\n' "$changed" | grep . | grep -vxF -f <(jq -r '.files[]' "$TASK_META") || true)"
+  [ -z "$extra" ] || problems+=("changed outside the task's files: $(printf '%s' "$extra" | paste -sd' ' -)")
+  while IFS= read -r f; do
+    printf '%s\n' "$changed" | grep -qxF "$f" || problems+=("$f is one of the task's files but is unchanged")
+  done < <(jq -r '.files[]' "$TASK_META")
+  jq -n --arg st "$status" --args '{status:$st, ok:($ARGS.positional | length == 0), problems:$ARGS.positional}' "${problems[@]}" >"$JOB_DIR/out/code-$3.check.json"
+  if [ "${#problems[@]}" -gt 0 ]; then
+    say "result code-$3 does NOT match its task:"; for n in "${problems[@]}"; do say "  - $n"; done
+    say "This checks the report's form. Every rule is still yours to check in the code."; exit 1
+  fi
+  say "result code-$3 matches its task: every rule answered, only the task's files changed."
+  say "This checks the report's form. Every rule is still yours to check in the code: open each cited line."
+}
+
 # --- retro and the lessons ledger -----------------------------------------------------------
 # After each job a seat reads the job's ledger and logs up to three lessons: habits it saw, good
 # or bad, each tied to the file that shows it. This only logs. No rule, prompt or code changes
@@ -734,8 +885,19 @@ job_numbers() {
     sb="$(jq -c --arg r "$slug" --args 'select(.repo == $r and .decision == "send_back" and (.issue as $i | $ARGS.positional | index($i)))' "${issues[@]}" <"$qa_home/screener/log.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
     ov="$(jq -c --arg r "$slug" --args 'select(.repo == $r and .decision == "overridden" and (.issue as $i | $ARGS.positional | index($i)))' "${issues[@]}" <"$qa_home/screener/log.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
   fi
+  # Builder task files made with `foreman task`: how many rules were given, how many had no
+  # proof but the builder's eye, and how many results did not match their task.
+  local t_rules=0 t_eye=0 t_bad=0
+  for f in "$JOB_DIR"/ctx/code-*.check.json; do
+    [ -f "$f" ] || continue
+    t_rules=$((t_rules + $(jq -r '.rules // 0' "$f"))); t_eye=$((t_eye + $(jq -r '.by_eye // 0' "$f")))
+  done
+  for f in "$JOB_DIR"/out/code-*.check.json; do
+    [ -f "$f" ] && [ "$(jq -r '.ok' "$f")" = false ] && t_bad=$((t_bad+1))
+  done
   jq -cn --argjson b "$blocks" --argjson p "$passes" --argjson c "$coder" --argjson s "$stuck" --argjson q "$qa_sent" \
-        --argjson sb "$sb" --argjson ov "$ov" --args '{checker_blocks:$b, checker_passes:$p, coder_tasks:$c, coder_stuck:$s,
+        --argjson sb "$sb" --argjson ov "$ov" --argjson tr "$t_rules" --argjson te "$t_eye" --argjson tb "$t_bad" --args '{checker_blocks:$b, checker_passes:$p, coder_tasks:$c, coder_stuck:$s,
+          coder_rules:$tr, coder_rules_by_eye:$te, coder_results_not_matching:$tb,
           qa_contracts:$q, qa_verdicts:$ARGS.positional, screener_send_backs:$sb, screener_overruled:$ov}' "${verdicts[@]}"
 }
 
@@ -823,6 +985,9 @@ case "$cmd" in
   tracing) cmd_tracing "$@" ;;
   unstick) cmd_unstick "$@" ;;
   bans) cmd_bans "$@" ;;
+  task) cmd_task "$@" ;;
+  task-check) cmd_task_check "$@" ;;
+  result-check) cmd_result_check "$@" ;;
   retro) cmd_retro "$@" ;;
   lesson) cmd_lesson "$@" ;;
   habits) cmd_habits "$@" ;;

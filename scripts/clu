@@ -44,6 +44,16 @@ cmd_rulebook() {
   done < <(files)
   printf '%5d  total (cap %s)\n' "$total" "$max"
   [ "$total" -le "$max" ] || die "the rulebook is $((total - max)) lines over its cap of $max. A new rule replaces or merges with an old one."
+  # The lines that must survive any rewording. Text is matched across line breaks.
+  local lost=""
+  while IFS=$'\t' read -r f n; do
+    jq -e --rawfile t "$ROOT/$f" --arg f "$f" --argjson n "$n" '.must_keep[$f][$n] as $k | ($t | gsub("\\s+"; " ")) | contains($k | gsub("\\s+"; " "))' "$RULEBOOK" >/dev/null \
+      || lost="$lost
+  $f: $(jq -r --arg f "$f" --argjson n "$n" '.must_keep[$f][$n]' "$RULEBOOK")"
+  done < <(jq -r '.must_keep // {} | to_entries[] | .key as $f | .value | keys[] | [$f, .] | @tsv' "$RULEBOOK")
+  [ -z "$lost" ] || die "the rulebook has lost a line it must keep:$lost
+If the change is meant, change must_keep in rulebook.json in the same commit."
+  printf '%5d  must-keep lines, all present\n' "$(jq '[.must_keep // {} | .[] | length] | add // 0' "$RULEBOOK")"
 }
 
 cmd_audit() {

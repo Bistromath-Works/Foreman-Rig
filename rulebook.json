@@ -11,5 +11,53 @@
     "agents/qa-gatekeeper/guidance/role.md",
     "agents/qa-prober/guidance/role.md",
     "agents/qa-test-auditor/guidance/role.md"
-  ]
+  ],
+  "must_keep_about": "Lines that carry a rule the crew's safety or honesty depends on. An edit to the rulebook may reword around them but may not lose them: scripts/clu rulebook fails if one is gone. To change one on purpose, change it here in the same commit, which makes the change visible in review.",
+  "must_keep": {
+    "CULTURE.md": [
+      "A refusal is final",
+      "No seat pushes",
+      "Only the owner commits",
+      "Never edit files under `acceptance_tests` or `protected_paths`",
+      "Permission prompts belong to the human",
+      "Never print, copy or commit secrets",
+      "Only the owner asks"
+    ],
+    "qa/CULTURE.md": [
+      "never write or edit anything under",
+      "Never write product code",
+      "Never print, copy or commit secrets",
+      "Permission prompts belong to the human"
+    ],
+    "agents/owner/guidance/role.md": [
+      "**You never approve your own work.**",
+      "The human is asked about three things only",
+      "Outside facts carry their source",
+      "Model output is validated in code",
+      "No seat pushes",
+      "After a third BLOCK, stop",
+      "check every rule yourself",
+      "Never change a rule, a prompt or code because of a lesson"
+    ],
+    "agents/checker/guidance/role.md": [
+      "Any HIGH or MED: `verdict: BLOCK`",
+      "Run the verify command on the candidate"
+    ],
+    "agents/coder/guidance/role.md": [
+      "Every numbered rule counts",
+      "Never commit",
+      "Do not guess",
+      "Never invent a lesson"
+    ],
+    "agents/auditor/guidance/role.md": [
+      "you never edit, fix or commit anything except your output file"
+    ],
+    "agents/qa-gatekeeper/guidance/role.md": [
+      "Never edit `gates/`",
+      "You never retry a run"
+    ],
+    "agents/qa-test-auditor/guidance/role.md": [
+      "First line exactly `coverage: covered` or `coverage: narrowed`"
+    ]
+  }
 }
