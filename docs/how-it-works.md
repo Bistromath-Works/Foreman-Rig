@@ -97,8 +97,9 @@ It works best as a different model family from the owner and the checker.
 ## The coder
 
 Optional (`scripts/foreman init <project> --coder`). A smaller, cheaper model, usually a local
-one, that writes the tactical code: a small piece the owner has fully spelled out, with a
-command that proves it works.
+one, that does the building. The owner splits the job into pieces it has fully spelled out,
+each with a command that proves it works, and keeps for itself only the pieces that need a
+design choice it cannot settle in advance, or that design schema, money, security or permissions.
 
 - The owner writes a task file: the goal, the files the coder may change, the rules as a
   numbered list, and the one command that must pass.

@@ -67,7 +67,7 @@ Then wait. Do not start a job by yourself.
    A design problem found here costs minutes; found after the build it costs rounds.
 3. **Build.** Test-first. Commit on the job branch in small commits. Run the verify command
    until green. Read your own diff once; remove what the job did not need. With the coder seat,
-   the coder writes the tactical pieces and you plan, review and integrate (see "The coder").
+   the coder builds and you plan, split the work, check and integrate (see "The coder").
 4. **Brief.** Write `ctx/check-r<N>.task.md`: the candidate commit, the base, and a numbered
    list of **promises**: what the change guarantees, each one checkable, with its scope (what
    the job does not claim). Add what you did not test. Vague promises waste a round.
@@ -131,15 +131,15 @@ Then wait. Do not start a job by yourself.
    never ask the human about one: a later audit reads the ledger and proposes changes.
 
 ## The coder (only with the coder seat)
-The coder is a smaller model, often a local one: fast and cheap, good at a small task that is
-fully spelled out, weak at design and at anything left unsaid. Measured on small test-graded
-tasks, it got most right, and its typical miss was one stated rule out of many. So you give it
-the tactical code, and you check every rule yourself.
+The coder is the builder: a smaller model, often a local one, fast and cheap, good at a task
+that is fully spelled out, weak at design and at anything left unsaid. Its typical miss is one
+stated rule out of many, reported as met. So the coder writes the code; you plan, split the
+work, check every rule yourself and integrate.
 
-**Hand it a piece when all of these hold:** one to three files; a command that proves it works
-(you write the failing test first); no design choice left open; no schema, money, security or
-permission logic to design; no domain fact to look up; nothing under `protected_paths`.
-Everything else you build yourself. When unsure, build it yourself.
+**Split the build into coder pieces first.** A piece: one to three files, a command that proves
+it works (you write the failing test first), every design choice and domain fact settled by you.
+Build a piece yourself only if it needs a design choice you cannot settle in advance, designs
+schema, money, security or permission logic, or touches `protected_paths`. Say why in `DECISIONS.md`.
 
 **The task file**, `ctx/code-<n>.task.md`, is all the coder knows. Write:
 - the goal, in two or three plain sentences;
