@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Builder task files, and lines the rulebook must keep (CF-26).** `scripts/foreman task`
+  writes a builder task skeleton that splits rules into those the command proves and those
+  checked by eye (at most three, each with an example) and carries the result format.
+  `task-check` refuses a task that is not ready; `result-check` compares the builder's result
+  with the task and the checkout. Not yet in any seat's role. `rulebook.json` gains
+  `must_keep`: 29 lines that `scripts/clu rulebook` requires to be present. The retro counts
+  builder rules, check-by-eye rules and results that did not match their task.
+
 - **The coder builds by default (CF-25).** With the coder seat, the owner now splits every
   build into coder pieces first and builds a piece itself only for a design choice it cannot
   settle in advance, for schema, money, security or permission logic, or for a protected path,

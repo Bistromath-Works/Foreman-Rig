@@ -126,6 +126,23 @@ it. Design, schemas, money, security and anything the task cannot spell out stay
 | `FOREMAN/rig.<project>.yaml` | Your filled-in crew | No (gitignored) |
 | `PROJECT/.claude/settings.local.json`, `PROJECT/.codex/langfuse.json` | Langfuse keys, if tracing is on (see [observability.md](observability.md)) | No (excluded; the script refuses otherwise) |
 
+## Builder task files
+
+The builder knows only what its task file says, and its typical miss is a rule that nothing
+proves, reported as met. Three commands work on that. None of them is in a seat's role yet:
+they are built and tested, and the owner's role will point to them after a few jobs have set a
+baseline under the builder-first rule.
+
+| Command | What it does |
+| --- | --- |
+| `scripts/foreman task <project> <job> <n>` | Writes the skeleton of builder task `<n>`: goal, files, rules the command proves, rules checked by eye (at most three, each with an example), the command, and the exact shape of the result |
+| `scripts/foreman task-check ...` | Refuses a task file with a blank left, no file, no command, rules out of order, too many check-by-eye rules, or a check-by-eye rule with no example |
+| `scripts/foreman result-check ...` | Compares the builder's result with the task and the checkout: every rule answered, a file and line for each check-by-eye rule, the line exists, and nothing changed outside the task's files |
+
+The result format and its rules are written into the task file by the skeleton, so they reach
+the builder without adding a line to the rulebook. `result-check` checks the form of the report.
+It does not check that a rule is met: the owner still opens each cited line.
+
 ## Lessons, the rulebook and the audit
 
 After every job the retro step logs up to three lessons to the project's
@@ -134,7 +151,9 @@ After every job the retro step logs up to three lessons to the project's
 The **rulebook** is the set of instruction files a seat is given, listed in `rulebook.json`
 with a size cap in lines. `scripts/clu rulebook` prints the files and fails when the total is
 over the cap, and the tests run it, so a rule can only be added by replacing or merging an old
-one. Raising the cap is a decision for the human.
+one. Raising the cap is a decision for the human. `rulebook.json` also lists the lines that
+must survive any rewording (`must_keep`): the same command fails if one is gone, so a rule
+cannot be lost by tidying the text around it.
 
 `scripts/clu audit <project> [--model <id>]` sends the lessons (one sentence each, no code) and
 the rulebook's text to a model outside both rigs, and writes at most one proposal to
