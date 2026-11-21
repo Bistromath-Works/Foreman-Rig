@@ -89,9 +89,9 @@ file holds only your model choices).
 
 ## The coder
 
-Off unless you ask for it: `scripts/foreman init <project> --coder`. It takes the tactical
-coding off the owner: the owner spells out a small piece, the coder writes it, the owner reads
-every line and commits. It pays off when the coder is much cheaper than the owner, which in
+Off unless you ask for it: `scripts/foreman init <project> --coder`. It takes the building off the
+owner: the owner splits the job into spelled-out pieces, the coder writes them, the owner checks
+every rule, reads every line and commits. It pays off when the coder is much cheaper than the owner, which in
 practice means a local model.
 
 **Pick it by measuring, not by name.** We chose ours with a ladder of six small tasks graded by

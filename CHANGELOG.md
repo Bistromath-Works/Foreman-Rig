@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The coder builds by default (CF-25).** With the coder seat, the owner now splits every
+  build into coder pieces first and builds a piece itself only for a design choice it cannot
+  settle in advance, for schema, money, security or permission logic, or for a protected path,
+  with one line in `DECISIONS.md` saying why. Before, the owner built everything except small
+  pieces that met a list of conditions.
+
 - **Screener size limit raised to 200,000 characters (CF-14).** The first real job was 98,000
   characters and was skipped three times at the old limit of 60,000. Jev answers a change that
   size in about a second. `SCREEN_MAX_DIFF_CHARS` overrides the limit.
