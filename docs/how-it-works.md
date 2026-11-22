@@ -199,6 +199,27 @@ put such a message in a file. The guard stops a seat that forgets or misreads a 
 not stop one that hides the command in a script. If the ban list cannot be read, the guard
 refuses every shell command, so a broken setup is loud.
 
+
+## The front seat
+
+The lead is the only seat that talks to you, in its own terminal. If you would rather work a
+job out first, in the app you run Claude Code in, `scripts/foreman front <project>` makes a
+folder for that: `~/front/<project name>`. Open it as a project there. Its instructions tell
+the session to write the issue (goal, a Done-when list, out of scope), put the job in
+`<project>/.foreman/inbox/<issue id>.md`, and tell the lead with one `rig send`.
+
+The folder's settings, not its instructions, keep that session in its lane. The command guard
+refuses `rig send` and `rig queue` unless the command names this project's lead, and refuses
+any command naming the QA rig, its home folder or `scripts/qa`. A deny rule refuses reading
+the QA home. So the build side and the QA side never meet in the front seat's context. Like
+the crew's guard, this stops a session that forgets a rule, not one that sets out to get round
+it. It covers Claude Code sessions only.
+
+Every project's front seat is made by the same command, so a new project needs nothing rebuilt.
+`--plugin <id>` turns a Claude Code plugin on for that folder only (the plugin's marketplace
+must already be added on the machine). Running the command again updates the folder and keeps
+what you added to its settings.
+
 ## Safety rails
 
 Written in [CULTURE.md](../CULTURE.md), which every seat receives: no pushes or remotes, no

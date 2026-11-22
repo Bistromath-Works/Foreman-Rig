@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The front seat (CF-31).** `scripts/foreman front <project>` makes `~/front/<project name>`:
+  a folder for the human's own Claude Code session, where jobs are worked out and written up
+  as issues. Its settings let that session message the lead and no other seat, and keep the QA
+  rig out of reach (its name, its home folder and its command are refused in shell commands;
+  reads of its home folder are denied). Jobs are handed over as files in `.foreman/inbox/`.
+  `--plugin <id>` turns a Claude Code plugin on in that folder only. One command per project.
+- **Guard: "without" words must be on every command in the line.** `pnpm install
+  --frozen-lockfile; pnpm install left-pad` used to pass because only the first command was
+  read. A ban can also be marked `anywhere`, matching inside a path.
+
 - **Builder task files, and lines the rulebook must keep (CF-26).** `scripts/foreman task`
   writes a builder task skeleton that splits rules into those the command proves and those
   checked by eye (at most three, each with an example) and carries the result format.

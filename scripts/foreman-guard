@@ -10,7 +10,9 @@
 #
 # The ban list is written by `scripts/foreman bans <project>` from the project's banned_cmds and
 # Foreman's built-in bans. A ban matches when its text appears in the command as whole words
-# ("vercel" matches `npx vercel deploy`, not `cat vercel.json`). If the list cannot be read,
+# ("vercel" matches `npx vercel deploy`, not `cat vercel.json`). A ban marked "anywhere" matches
+# wherever its text appears, part of a path included. A ban with "unless" words is lifted only
+# when every command in the line that holds the text also has those words. If the list cannot be read,
 # every shell command is refused: a guard that fails open is no guard.
 #
 # This stops a seat that forgets or misreads a rule. It does not stop one that sets out to get
@@ -50,12 +52,12 @@ def esc: gsub("(?<c>[\\\\^$.|?*+()\\[\\]{}])"; "\\\\\(.c)");
 | (if ($raw | test("(^|[^A-Za-z0-9_])(bash|sh|zsh|dash) (-[a-z]+ )*-[a-z]*c( |$)")) then $raw
    else ($nodoc | gsub("'[^']*'"; "''") | gsub("\"(\\\\.|[^\"\\\\])*\""; "\"\"")) end) as $bare
 | def has($c; $t): $c | test("(^|[^A-Za-z0-9_])" + ($t | esc) + "($|[\\s;|&<>)\"'`=])");
-# The words of the one command that holds the banned text: the piece between ; | & and newlines.
-def words($t): [$plain | splits("[;|&\\n]+") | select(has(.; $t))] | (.[0] // "") | [splits(" +")] ;
+# The words of every command that holds the banned text: the pieces between ; | & and newlines.
+def pieces($t): [$plain | splits("[;|&\\n]+") | select(has(.; $t)) | [splits(" +")]] | if length == 0 then [[""]] else . end;
 first(
-  ($b[0].bans[] | select(has($raw; .text) or has($plain; .text))
-    | . as $ban
-    | select(($ban.unless // []) as $u | ($u | length) == 0 or ((words($ban.text)) as $w | $u | all(. as $x | $w | index($x)) | not))
+  ($b[0].bans[] | . as $ban
+    | select(($ban.anywhere == true and ($raw | contains($ban.text))) or has($raw; $ban.text) or has($plain; $ban.text))
+    | select(($ban.unless // []) as $u | ($u | length) == 0 or any(pieces($ban.text)[]; . as $w | $u | all(. as $x | $w | index($x)) | not))
     | "`\(.text)`\(if (.unless // []) | length > 0 then " without " + (.unless | join(" ")) else "" end) is banned (\(.source))"),
   (select($b[0].background != false)
     | select($bg == "true"
