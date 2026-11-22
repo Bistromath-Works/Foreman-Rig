@@ -44,6 +44,21 @@
   - *Task files.* `task-check` reads one copy of the task for its checks and its digest. A
     bare "Rule N:" label with nothing after it is not an example.
   - Three tests that could pass with their fix removed now fail without it.
+- **Fourth review (CF-22, CF-35).** 14 findings, none high. Taken:
+  - *Guard.* Commands inside a script handed to a shell with `-c`, inside `$( )` and inside
+    backquotes are read as commands in their own right, so `bash -c 'git -C repo push'` is
+    refused and `bash -c 'rig send <lead> ...'` is allowed. A redirection keeps its number
+    (`git 2>err push` is git push). A comment is dropped (`pnpm install # --offline` no longer
+    counts the comment's words). `;&` in a `case` and `&` inside `$(( ))` are not background
+    jobs. A here-document may end with a hyphenated word, and its end word may be indented
+    only after `<<-`. A 180 KB here-document is checked in about a second (it took half a
+    minute), and a command too long for a command line is still checked.
+  - *Front seat.* An issue is marked done only when the lead's record names that issue, gives
+    the merge commit, and the commit is on the base branch.
+  - *Stall watcher, task files.* A failed write while undoing a nudge count no longer stops a
+    one-shot pass. An empty code block is not an example, and the label needs its colon.
+  - Not taken, as limits of a guard against mistakes: a `<<EOF` written inside quotes, a
+    message whose text is itself `--destination=...`, and `$'...'` quoting.
 - **A stalled builder is nudged (CF-28).** On the second real job the builder stopped mid-task
   five times, once for 1 hour 50 minutes, and nothing noticed. The session record shows why:
   each time, the model used its whole reply limit (8,192 tokens) thinking and the turn ended

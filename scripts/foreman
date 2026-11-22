@@ -460,7 +460,7 @@ stall_pass() {
       { printf '%s %s\n' "$((nudges + 1))" "$told" > "$c"; } 2>/dev/null \
         || { unstick_log "$seat: idle on $item, but its nudge count cannot be saved ($c); not nudging"; continue; }
       rig send "$seat" "From the Foreman watcher: you stopped with your claimed task unfinished (queue item $item). Carry on with it now. Open the task file it names if you need to, finish the code, run the command, write the result file, and hand back to crew-owner. If you cannot finish, write the result with status: stuck and the reason, and hand back anyway." >/dev/null 2>&1 \
-        || { printf '%s %s\n' "$nudges" "$told" > "$c"; unstick_log "$seat: idle on $item, but the nudge could not be sent"; continue; }
+        || { { printf '%s %s\n' "$nudges" "$told" > "$c"; } 2>/dev/null || true; unstick_log "$seat: idle on $item, but the nudge could not be sent"; continue; }
       nudges=$((nudges + 1))
       stall_record "$seat" "$item" "{at:\$at, seat:\$seat, item:\$item, nudge:$nudges}"
       unstick_log "$seat: nudged, idle on claimed task $item (pane unchanged ${idle}s, nudge $nudges of $STALL_NUDGES)"
@@ -468,7 +468,7 @@ stall_pass() {
       { printf '%s 1\n' "$nudges" > "$c"; } 2>/dev/null \
         || { unstick_log "$seat: still idle on $item, but its record cannot be saved ($c); not telling the owner again and again"; continue; }
       rig send "$owner" "From the Foreman watcher: the builder ($seat) is still idle on its claimed task (queue item $item) after $STALL_NUDGES nudges. Do not wait for it. Look at what it left in the checkout, then build the piece yourself or hand it over again as a smaller task. Note the time lost in LOG.md and the reason in DECISIONS.md." >/dev/null 2>&1 \
-        || { printf '%s 0\n' "$nudges" > "$c"; unstick_log "$seat: still idle on $item after $STALL_NUDGES nudges, but the owner could not be told; will try again"; continue; }
+        || { { printf '%s 0\n' "$nudges" > "$c"; } 2>/dev/null || true; unstick_log "$seat: still idle on $item after $STALL_NUDGES nudges, but the owner could not be told; will try again"; continue; }
       told=1
       stall_record "$seat" "$item" '{at:$at, seat:$seat, item:$item, told_owner:true}'
       unstick_log "$seat: still idle on $item after $STALL_NUDGES nudges; told the owner"
@@ -935,8 +935,9 @@ cmd_task_check() {
     for w in $(printf '%s\n' "$eye" | cut -f1 | grep . || true); do
       printf '%s\n' "$ex" | awk -v n="$w" '
           { l = tolower($0) }
-          match(l, "^[^a-z0-9]*rule[ \t]+" n "[^0-9a-z]") { on = 1; rest = substr($0, RSTART + RLENGTH); if (rest ~ /[^[:space:]:*_`-]/) found = 1; next }
-          l ~ /^[^a-z0-9]*rule[ \t]+[0-9]+[^0-9a-z]/ { on = 0; next }
+          match(l, "^[^a-z0-9]*rule[ \t]+" n "[ \t]*:") { on = 1; rest = substr($0, RSTART + RLENGTH); if (rest ~ /[^[:space:]:*_`-]/) found = 1; next }
+          l ~ /^[^a-z0-9]*rule[ \t]+[0-9]+[ \t]*:/ { on = 0; next }
+          /^[[:space:]]*(```|~~~)[A-Za-z0-9_-]*[[:space:]]*$/ { next }      # a code fence is not content
           on && /[^[:space:]]/ { found = 1 }
           END { exit !found }' \
         || problems+=("check-by-eye rule $w needs its own example under Examples, starting \"Rule $w:\" (the exact form wanted)")
