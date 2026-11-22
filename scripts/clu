@@ -65,7 +65,11 @@ cmd_audit() {
   ledger="$project/.foreman/habits.jsonl"
   [ -s "$ledger" ] || die "no lessons yet in $ledger"
   jq -e . "$ledger" >/dev/null 2>&1 || die "$ledger has a line that is not JSON"
-  ! grep -Eiq -- "$SECRET_RE" "$ledger" || die "the ledger holds something that looks like a key or secret (line $(grep -Ein -- "$SECRET_RE" "$ledger" | head -1 | cut -d: -f1)). Nothing was sent. Remove it and run again."
+  # Scanned twice: as written, and with every text field decoded (in the file a quote inside a
+  # lesson is written \", which would hide password="..." from the pattern).
+  local hit
+  hit="$({ grep -Ein -- "$SECRET_RE" "$ledger" | cut -d: -f1; jq -r 'input_line_number as $n | [.. | strings][] | gsub("\n"; " ") | "\($n)\t\(.)"' "$ledger" | grep -Ei -- "$SECRET_RE" | cut -f1; } | head -1)" || true
+  [ -z "$hit" ] || die "the ledger holds something that looks like a key or secret (line $hit). Nothing was sent. Remove it and run again."
   [ -n "${OPENROUTER_API_KEY:-}" ] || die "OPENROUTER_API_KEY is not set"
   cmd_rulebook >/dev/null
 
@@ -97,13 +101,13 @@ cmd_audit() {
   local problems=() file old new n
   if jq -e '.proposal == null' "$tmp/answer.json" >/dev/null; then :; else
     jq -e '.proposal | type == "object" and (.file|type)=="string" and (.old_text|type)=="string" and (.new_text|type)=="string" and (.habit|type)=="string"
-           and (.jobs|type)=="array" and (.jobs | all(.[]; type == "string"))' "$tmp/answer.json" >/dev/null \
-      || problems+=("the proposal is missing a field, or its jobs are not a list of job ids")
+           and (.jobs|type)=="array" and (.jobs | all(.[]; type == "string" and (gsub("\\s"; "") | length) > 0))' "$tmp/answer.json" >/dev/null \
+      || problems+=("the proposal is missing a field, or its jobs are not a list of job ids (a blank id is not one)")
     if [ "${#problems[@]}" -eq 0 ]; then
       file="$(jq -r .proposal.file "$tmp/answer.json")"
       files | grep -qxF "$file" || problems+=("'$file' is not a rulebook file")
-      n="$(jq -r --slurpfile l <(jq -cs '[.[].job] | unique' "$ledger") '[.proposal.jobs | unique[] | select(. as $j | $l[0] | index($j) | not)] | join(", ")' "$tmp/answer.json")"
-      [ -z "$n" ] || problems+=("it names a job that is not in the ledger: $n")
+      n="$(jq -r --slurpfile l <(jq -cs '[.[].job] | unique' "$ledger") '[.proposal.jobs | unique[] | select(. as $j | $l[0] | index($j) | not)] | if length == 0 then "" else "\(length): " + (map("\"" + . + "\"") | join(", ")) end' "$tmp/answer.json")"
+      [ -z "$n" ] || problems+=("it names job(s) that are not in the ledger, $n")
       n="$(jq -r '.proposal.jobs | unique | length' "$tmp/answer.json")"
       [ "$n" -ge "$MIN_JOBS" ] || problems+=("the habit is tied to $n job(s) in the ledger; it needs $MIN_JOBS")
       if [ -f "$ROOT/$file" ] && files | grep -qxF "$file"; then
@@ -115,6 +119,9 @@ cmd_audit() {
       if [ "${#problems[@]}" -eq 0 ]; then
         jq -rj --rawfile f "$ROOT/$file" '.proposal as $p | ($f | split($p.old_text)) as $parts | $parts[0] + $p.new_text + $parts[1]' "$tmp/answer.json" >"$tmp/after"
         [ "$(wc -l <"$tmp/after")" -le "$(wc -l <"$ROOT/$file")" ] || problems+=("the file would have more lines after the change; the rulebook may not grow")
+        # The same must-keep check as `clu rulebook`, on the file as it would be.
+        n="$(jq -r --rawfile t "$tmp/after" --arg f "$file" '($t | gsub("\\s+"; " ")) as $t | [.must_keep[$f] // [] | .[] | select(. as $k | $t | contains($k | gsub("\\s+"; " ")) | not)] | join(" | ")' "$RULEBOOK")"
+        [ -z "$n" ] || problems+=("the change would remove a line the rulebook must keep: $n")
       fi
       ! jq -r '.proposal.new_text' "$tmp/answer.json" | grep -Eiq -- "$SECRET_RE" || problems+=("new_text holds something that looks like a key")
     fi
@@ -124,7 +131,11 @@ cmd_audit() {
   local stamp slug rec patch
   stamp="$(date -u +%Y%m%d-%H%M%S)"; slug="$(printf '%s' "$CLU_MODEL" | tr -c 'A-Za-z0-9.-' '_')"
   rec="$OUT/$stamp-$slug.json"; n=1
-  while [ -e "$rec" ] || [ -e "${rec%.json}.patch" ]; do n=$((n+1)); rec="$OUT/$stamp-$slug-$n.json"; done   # never reuse a name
+  # Never reuse a name. The record is created empty here, and creating a file that already
+  # exists fails, so two audits started in the same second cannot both take one name.
+  while [ -e "${rec%.json}.patch" ] || ! ( set -o noclobber; : >"$rec" ) 2>/dev/null; do
+    n=$((n+1)); rec="$OUT/$stamp-$slug-$n.json"; [ "$n" -lt 1000 ] || die "cannot create a record in $OUT"
+  done
   patch="${rec%.json}.patch"
   jq -n --slurpfile a "$tmp/answer.json" --arg m "$CLU_MODEL" --arg at "$(date -u +%FT%TZ)" --arg p "$project" \
         --argjson lessons "$(wc -l <"$ledger" | tr -d ' ')" --argjson jobs "$jobs" --args \

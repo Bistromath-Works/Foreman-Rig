@@ -112,8 +112,9 @@ Two things deal with it:
   thinking). To see whether this is your problem, look for `"stopReason":"length"` in the
   seat's session file under `~/.openrig/state/pi/<seat>/sessions/`.
 - **The watcher nudges it.** The same watcher as above looks at the builder seat. When its pane
-  has not changed for 5 minutes and the queue shows a task it claimed and has not handed back,
-  the watcher sends it a message naming the task. After three nudges on the same task it tells
+  has not changed for 5 minutes, its turn has ended (a pi seat's session record says so; while
+  a tool is running it waits 20 minutes), and the queue shows a task it claimed and has not
+  handed back, the watcher sends it a message naming the task. After three nudges on the same task it tells
   the owner once, and stops. It only sends messages; it presses no key in the builder's pane.
   Nudges are in the watcher's log, and `scripts/foreman retro` counts them (`coder nudges`,
   `coder gave up`), so a builder that needs waking every task shows up in the numbers.

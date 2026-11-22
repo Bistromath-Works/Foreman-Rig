@@ -398,56 +398,76 @@ unstick_pass() {
 # claimed. Nothing in OpenRig wakes it, and the owner, waiting at its own prompt, has no clock.
 # Any message restarts it. So, for each seat in STALL_SEATS, when all of these hold:
 #   - its pane has not changed for STALL_IDLE seconds (a working seat redraws);
+#   - its turn has ended. A pi seat's session record says so: the last message is the model's
+#     and asks for no tool. While a tool runs or the model is answering, a quiet pane is work,
+#     and the seat is left alone until the pane has been still for four times STALL_IDLE. A seat
+#     with no readable record is judged on its pane alone;
 #   - the queue shows a task it claimed and has not handed back (state in-progress);
 # the watcher sends it one message naming the task. After STALL_NUDGES nudges on the same task
-# it tells the owner once and stops. Every nudge is logged, and recorded in stalls.jsonl so the
-# retro can count them. It only ever sends messages: it presses no key in the seat's pane.
+# it tells the owner once and stops. The count is kept per task, so it survives the seat's pane
+# vanishing or the queue showing another task for a while. Every nudge is logged, and recorded
+# in stalls.jsonl so the retro can count them. It only ever sends messages: it presses no key
+# in the seat's pane.
 STALL_IDLE="${FOREMAN_STALL_IDLE:-300}"
 STALL_NUDGES=3
 STALL_SEATS=(coder)
 
 stall_record() { jq -cn --arg at "$(date -u +%FT%TZ)" --arg seat "$1" --arg item "$2" "$3" >> "$(unstick_dir)/stalls.jsonl"; }
 
+# Is the seat on runtime $1 named $2 in the middle of a turn? Only a pi seat can say.
+mid_turn() {
+  [ "$1" = pi ] || return 1
+  local s last
+  s="$(ls -t "${OPENRIG_HOME:-$HOME/.openrig}/state/pi/$2/sessions"/*.jsonl 2>/dev/null | head -1)" || true
+  [ -n "$s" ] || return 1
+  last="$(tail -n 40 "$s" 2>/dev/null | jq -rR 'fromjson? | select(.type == "message") | .message.role + " " + (.message.stopReason // "")' 2>/dev/null | tail -n 1)" || true
+  case "$last" in "assistant toolUse"|"toolResult "*|"user "*) return 0 ;; *) return 1 ;; esac
+}
+
 stall_pass() {
-  local id rt md seat pane f _h since nudges told item q now owner="crew-owner@$RIG_NAME"
+  local id rt md seat pane f c _h since nudges told item now idle owner="crew-owner@$RIG_NAME"
   now="$(date +%s)"
   while read -r id rt md; do
     case " ${STALL_SEATS[*]} " in *" $id "*) ;; *) continue ;; esac
     seat="crew-$id@$RIG_NAME"
     f="$(unstick_dir)/$seat.stall"
     pane="$(tmux capture-pane -p -t "=$seat:" 2>/dev/null && printf x)" || { rm -f "$f" "$f.pane"; continue; }
-    # State: a copy of the pane ($f.pane) and "since nudges told item" ($f). A changed pane, or
-    # a record that does not read as that, starts the idle timer over.
+    # State: a copy of the pane ($f.pane) and the time it was first seen like that ($f). A
+    # changed pane, or a record that is not one plain number, starts the idle timer over.
     printf '%s' "$pane" > "$f.new"
     _h="$(cat "$f" 2>/dev/null)" || _h=""
-    if ! printf '%s\n' "$_h" | grep -Eqx '[0-9]{1,12} [0-9] [01] [A-Za-z0-9._:-]{1,120}' \
+    if ! cmp -s "$f.new" "$f.pane" || ! printf '%s\n' "$_h" | grep -Eqx '[0-9]{1,12}' \
       || [ "$(wc -l < "$f" 2>/dev/null || echo 0)" -ne 1 ]; then
-      mv "$f.new" "$f.pane"; printf '%s 0 0 -\n' "$now" > "$f"; continue
-    fi
-    read -r since nudges told item <<<"$_h"; since=$((10#$since))
-    if ! cmp -s "$f.new" "$f.pane"; then
-      mv "$f.new" "$f.pane"; printf '%s %s %s %s\n' "$now" "$nudges" "$told" "$item" > "$f"; continue
+      mv "$f.new" "$f.pane"; printf '%s\n' "$now" > "$f"; continue
     fi
     rm -f "$f.new"
-    [ $((now - since)) -ge "$STALL_IDLE" ] || continue
+    since=$((10#$_h)); idle=$((now - since))
+    [ "$idle" -ge "$STALL_IDLE" ] || continue
+    if mid_turn "$rt" "$seat" && [ "$idle" -lt $((STALL_IDLE * 4)) ]; then continue; fi
     # Idle long enough. Whatever is found, the next look is a full stall time away.
-    q="$(rig queue list --destination "$seat" --state in-progress --json 2>/dev/null \
-          | jq -r '[.[] | select(.state == "in-progress") | .qitemId // empty] | last // empty' 2>/dev/null)" || q=""
-    [[ "$q" =~ ^[A-Za-z0-9._:-]{1,120}$ ]] || { printf '%s %s %s %s\n' "$now" "$nudges" "$told" "$item" > "$f"; continue; }
-    [ "$q" = "$item" ] || { item="$q"; nudges=0; told=0; }
+    printf '%s\n' "$now" > "$f"
+    item="$(rig queue list --destination "$seat" --state in-progress --json 2>/dev/null \
+          | jq -r '[.[] | select(.state == "in-progress") | .qitemId // empty] | last // empty' 2>/dev/null)" || item=""
+    [[ "$item" =~ ^[A-Za-z0-9_][A-Za-z0-9._:-]{0,119}$ ]] || continue
+    # The count for this task: "nudges told".
+    c="$(unstick_dir)/stall-items/$seat/$item"; mkdir -p "${c%/*}"
+    _h="$(cat "$c" 2>/dev/null)" || _h=""
+    printf '%s\n' "$_h" | grep -Eqx '[0-9] [01]' || _h="0 0"
+    read -r nudges told <<<"$_h"
     if [ "$nudges" -lt "$STALL_NUDGES" ]; then
       rig send "$seat" "From the Foreman watcher: you stopped with your claimed task unfinished (queue item $item). Carry on with it now. Open the task file it names if you need to, finish the code, run the command, write the result file, and hand back to crew-owner. If you cannot finish, write the result with status: stuck and the reason, and hand back anyway." >/dev/null 2>&1 \
-        || { unstick_log "$seat: idle on $item, but the nudge could not be sent"; printf '%s %s %s %s\n' "$now" "$nudges" "$told" "$item" > "$f"; continue; }
+        || { unstick_log "$seat: idle on $item, but the nudge could not be sent"; continue; }
       nudges=$((nudges + 1))
       stall_record "$seat" "$item" "{at:\$at, seat:\$seat, item:\$item, nudge:$nudges}"
-      unstick_log "$seat: nudged, idle on claimed task $item (pane unchanged $((now - since))s, nudge $nudges of $STALL_NUDGES)"
+      unstick_log "$seat: nudged, idle on claimed task $item (pane unchanged ${idle}s, nudge $nudges of $STALL_NUDGES)"
     elif [ "$told" = 0 ]; then
-      rig send "$owner" "From the Foreman watcher: the builder ($seat) is still idle on its claimed task (queue item $item) after $STALL_NUDGES nudges. Do not wait for it. Look at what it left in the checkout, then build the piece yourself or hand it over again as a smaller task. Note the time lost in LOG.md and the reason in DECISIONS.md." >/dev/null 2>&1 || true
+      rig send "$owner" "From the Foreman watcher: the builder ($seat) is still idle on its claimed task (queue item $item) after $STALL_NUDGES nudges. Do not wait for it. Look at what it left in the checkout, then build the piece yourself or hand it over again as a smaller task. Note the time lost in LOG.md and the reason in DECISIONS.md." >/dev/null 2>&1 \
+        || { unstick_log "$seat: still idle on $item after $STALL_NUDGES nudges, but the owner could not be told; will try again"; continue; }
       told=1
       stall_record "$seat" "$item" '{at:$at, seat:$seat, item:$item, told_owner:true}'
       unstick_log "$seat: still idle on $item after $STALL_NUDGES nudges; told the owner"
     fi
-    printf '%s %s %s %s\n' "$now" "$nudges" "$told" "$item" > "$f"
+    printf '%s %s\n' "$nudges" "$told" > "$c"
   done < <(members)
 }
 
@@ -458,6 +478,11 @@ cmd_unstick() {
   require_rig_file
   command -v tmux >/dev/null 2>&1 || die "tmux not found"
   mkdir -p "$(unstick_dir)"
+  # One watcher per crew at a time: two would each count their own presses and nudges.
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$(unstick_dir)/lock"
+    flock -n 9 || { say "another watcher is already running for $RIG_NAME; this one did nothing"; return 0; }
+  fi
   if [ "$once" = 1 ]; then unstick_pass; stall_pass; return 0; fi
   say "Watching $RIG_NAME for unsent OpenRig messages and a stalled builder (every ${UNSTICK_EVERY}s). Ctrl-C to stop."
   while :; do unstick_pass || true; stall_pass || true; sleep "$UNSTICK_EVERY"; done
@@ -682,10 +707,12 @@ install_bans() {
       FILE="$PROJECT/.codex/hooks.json" HOOK="$hook" OFF="$off" MATCH="^Bash$" json_edit "$BAN_EDIT"
     fi
   fi
+  # Off: every seat of this crew that ever ran on pi, not only the ones that do today.
+  if [ "$off" -eq 1 ]; then rm -f "${OPENRIG_HOME:-$HOME/.openrig}/state/pi"/crew-*@"$RIG_NAME"/agent/extensions/foreman-guard.ts; fi
   while read -r id rt md; do
     [ "$rt" = pi ] || continue
     dir="${OPENRIG_HOME:-$HOME/.openrig}/state/pi/crew-$id@$RIG_NAME/agent/extensions"
-    if [ "$off" -eq 1 ]; then rm -f "$dir/foreman-guard.ts"; continue; fi
+    [ "$off" -eq 0 ] || continue
     mkdir -p "$dir"
     GUARD="$guard" LIST="$list" node -e '
       const fs = require("fs");
@@ -776,7 +803,7 @@ cmd_front() {
   mkdir -p "$dir/.claude" "$dir/.foreman-front" "$PROJECT/.foreman/inbox"
   jq -n --arg dir "$dir" --arg lead "$lead" --args '
     {project: $dir, background: false,
-     bans: ([("rig send", "rig queue") | {text: ., unless: [$lead], source: "front seat: the lead is the only seat it may message"}]
+     bans: ([{text: "rig send", arg: "first"}, {text: "rig queue", arg: "--destination"} | . + {unless: [$lead], source: "front seat: the lead is the only seat it may message"}]
           + [$ARGS.positional[] | {text: ., anywhere: true, source: "front seat: the QA rig is out of reach"}])}' \
     "$qa_rig" "$qa_home" "$ROOT/scripts/qa" >"$list.tmp" && mv "$list.tmp" "$list"
   hook="$(printf '%q %q' "$ROOT/scripts/foreman-guard" "$list")"
@@ -842,7 +869,7 @@ FILL-ME: two or three plain sentences. What this piece does and why.
 FILL-ME
 
 ## Examples
-<!-- for each check-by-eye rule: the exact form wanted, two or three lines of code. Write "none" if there are no such rules. -->
+<!-- for each check-by-eye rule: a line "Rule N:" and then the exact form wanted, two or three lines of code. Write "none" if there are no such rules. -->
 FILL-ME
 
 ## Command that must pass
@@ -893,8 +920,11 @@ cmd_task_check() {
   n="$(printf '%s\n' "$eye" | grep -c . || true)"
   [ "$n" -le "$MAX_BY_EYE" ] || problems+=("$n check-by-eye rules; at most $MAX_BY_EYE. Turn the others into something the command proves (a test, a lint rule), or split the piece")
   if [ "$n" -gt 0 ]; then
-    ex="$(section "$TASK" Examples | tr -d '[:space:]')"
-    [ -n "$ex" ] && [ "$ex" != none ] || problems+=("check-by-eye rules need an example of the exact form wanted, under Examples")
+    ex="$(section "$TASK" Examples)"
+    for w in $(printf '%s\n' "$eye" | cut -f1 | grep . || true); do
+      printf '%s\n' "$ex" | grep -Eiq "(^|[^A-Za-z0-9])rule $w([^0-9]|\$)" \
+        || problems+=("check-by-eye rule $w needs its own example under Examples, starting \"Rule $w:\" (the exact form wanted)")
+    done
   fi
   [ "$((want-1))" -le "$WARN_RULES" ] || warns+=("$((want-1)) rules in one piece: the builder misses more as the list grows; consider splitting")
   cmd="$(section "$TASK" "Command that must pass" | grep -o '`[^`]*`' | head -1 | tr -d '`' || true)"
@@ -906,7 +936,8 @@ cmd_task_check() {
   fi
   jq -n --argjson rules "$((want-1))" --argjson eye "$n" --arg files "$files" \
     --arg proved "$(printf '%s\n' "$proved" | cut -f1 | grep . | paste -sd' ' - || true)" --arg eyen "$(printf '%s\n' "$eye" | cut -f1 | grep . | paste -sd' ' - || true)" \
-    '{rules:$rules, by_eye:$eye, files:($files | split("\n") | map(select(length > 0))),
+    --arg sum "$(sha256sum <"$TASK" | cut -d' ' -f1)" \
+    '{rules:$rules, by_eye:$eye, task_sha256:$sum, files:($files | split("\n") | map(select(length > 0))),
       proved:($proved | split(" ") | map(select(length > 0) | tonumber)), eye:($eyen | split(" ") | map(select(length > 0) | tonumber))}' >"$TASK_META"
   say "task code-$3 is ready: $((want-1)) rules, $n checked by eye, $(printf '%s\n' "$files" | grep -c .) file(s)"
 }
@@ -915,6 +946,8 @@ cmd_result_check() {
   resolve "${1:-}"; job_dir "${2:-}"; task_paths "${3:-}"
   [ -f "$TASK_META" ] || die "run task-check on this task first (no $TASK_META)"
   [ -f "$RESULT" ] || die "no result file $RESULT"
+  [ -f "$TASK" ] && [ "$(jq -r '.task_sha256 // ""' "$TASK_META")" = "$(sha256sum <"$TASK" | cut -d' ' -f1)" ] \
+    || die "the task file changed after task-check (or is gone), so the result cannot be checked against it. Run task-check again: scripts/foreman task-check \"$PROJECT\" $JOB $3"
   local status problems=() n ev f line changed extra
   status="$(sed -n 's/^status:[[:space:]]*\([a-z]*\).*/\1/p' "$RESULT" | head -1)"
   case "$status" in
@@ -969,7 +1002,10 @@ job_dir() {
 # records. Counted in code so that no model has to remember them.
 job_numbers() {
   local qa_home="${QA_HOME:-$HOME/.foreman-qa}" f blocks=0 passes=0 coder=0 stuck=0 qa_sent=0 sb=0 ov=0
-  local verdicts=() issue cand d v
+  local verdicts=() issue cand d v began runs=" "
+  # When the job began: the oldest file in its folder. Rows in shared logs count from then on.
+  began="$(find "$JOB_DIR" -type f -printf '%T@\n' 2>/dev/null | sort -n | head -1 | cut -d. -f1)"
+  began="$(date -u -d "@${began:-0}" +%FT%TZ)"
   for f in "$JOB_DIR"/out/*.md; do
     [ -f "$f" ] || continue
     case "$(head -n 12 "$f" | sed -n 's/^verdict:[[:space:]]*\(PASS\|BLOCK\).*/\1/p' | head -1)" in
@@ -990,15 +1026,16 @@ job_numbers() {
     for d in "$qa_home"/runs/*/; do
       [ -f "$d/verdict.json" ] && [ -f "$d/contract.json" ] || continue
       [ "$(jq -r '.issue + " " + .candidate' "$d/contract.json")" = "$issue $cand" ] || continue
+      case "$runs" in *" $d "*) continue ;; esac; runs="$runs$d "     # a QA run counts once
       v="$(jq -r '.verdict + (if .gate then " at " + .gate else "" end)' "$d/verdict.json")"; verdicts+=("$v")
     done
     case "$seen" in *" $issue "*) ;; *) seen="$seen$issue "; [ -z "$issue" ] || issues+=("$issue") ;; esac
   done
   # Screener rows are counted once per job, however many QA rounds it had: each row whose issue
-  # is one of this job's and whose repo is this project.
+  # is one of this job's, whose repo is this project, and that was written since the job began.
   if [ -f "$qa_home/screener/log.jsonl" ] && [ "${#issues[@]}" -gt 0 ]; then
-    sb="$(jq -c --arg r "$slug" --args 'select(.repo == $r and .decision == "send_back" and (.issue as $i | $ARGS.positional | index($i)))' "${issues[@]}" <"$qa_home/screener/log.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
-    ov="$(jq -c --arg r "$slug" --args 'select(.repo == $r and .decision == "overridden" and (.issue as $i | $ARGS.positional | index($i)))' "${issues[@]}" <"$qa_home/screener/log.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
+    sb="$(jq -c --arg r "$slug" --arg b "$began" --args 'select(.repo == $r and (.at // "") >= $b and .decision == "send_back" and (.issue as $i | $ARGS.positional | index($i)))' "${issues[@]}" <"$qa_home/screener/log.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
+    ov="$(jq -c --arg r "$slug" --arg b "$began" --args 'select(.repo == $r and (.at // "") >= $b and .decision == "overridden" and (.issue as $i | $ARGS.positional | index($i)))' "${issues[@]}" <"$qa_home/screener/log.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
   fi
   # Builder task files made with `foreman task`: how many rules were given, how many had no
   # proof but the builder's eye, and how many results did not match their task.
@@ -1012,11 +1049,9 @@ job_numbers() {
   done
   # Times the watcher nudged an idle builder, and times it gave up and told the owner, since
   # this job's folder got its first file.
-  local began nud=0 gave=0 stalls
+  local nud=0 gave=0 stalls
   RIG_NAME="${RIG_NAME:-foreman-$SLUG}"; stalls="$(unstick_dir)/stalls.jsonl"
-  began="$(find "$JOB_DIR" -type f -printf '%T@\n' 2>/dev/null | sort -n | head -1 | cut -d. -f1)"
-  if [ -f "$stalls" ] && [ -n "$began" ]; then
-    began="$(date -u -d "@$began" +%FT%TZ)"
+  if [ -f "$stalls" ]; then
     nud="$(jq -c --arg b "$began" 'select(.at >= $b and .nudge)' <"$stalls" 2>/dev/null | wc -l | tr -d ' ')"
     gave="$(jq -c --arg b "$began" 'select(.at >= $b and .told_owner)' <"$stalls" 2>/dev/null | wc -l | tr -d ' ')"
   fi

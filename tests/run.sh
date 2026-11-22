@@ -550,11 +550,11 @@ stall_setup
 export FOREMAN_STALL_IDLE=300
 passes 3
 [ "$(sends "$COD")" = 0 ] && ok "stall: waits until the pane has been unchanged for the stall time" || bad "stall idle time" "$(cat "$T/rig.calls")"
-printf '1 0 0 -\n' > "$SD/$COD.stall"          # seen long ago...
+printf '1\n' > "$SD/$COD.stall"          # seen long ago...
 printf 'more output\n' >> "$T/pane.$COD"        # ...but the pane has moved since
 passes 1
 [ "$(sends "$COD")" = 0 ] && ok "stall: a pane that changed is a working builder" || bad "stall changed pane" "$(cat "$T/rig.calls")"
-printf '1 0 0 -\n' > "$SD/$COD.stall"
+printf '1\n' > "$SD/$COD.stall"
 passes 1
 [ "$(sends "$COD")" = 1 ] && ok "stall: the same pane seen long ago is nudged" || bad "stall aged" "$(cat "$T/rig.calls")"
 teardown
@@ -567,6 +567,51 @@ grep -q "told the owner" "$SD/log" && ok "stall: telling the owner is logged" ||
 echo '[{"qitemId":"qitem-9","state":"in-progress"}]' > "$T/queue.json"
 passes 1
 [ "$(sends "$COD")" = 4 ] && ok "stall: a new task starts the count over" || bad "stall new task" "$(cat "$T/rig.calls")"
+teardown
+
+# The count belongs to the task: another task shown for a while, or a pane that cannot be read
+# for a pass, does not hand the first task three more nudges.
+stall_setup
+passes 5                                                    # A: three nudges, owner told
+echo '[{"qitemId":"qitem-B","state":"in-progress"}]' > "$T/queue.json"; passes 1
+echo '[{"qitemId":"qitem-1","state":"in-progress"}]' > "$T/queue.json"; passes 2
+mv "$T/pane.$COD" "$T/pane.gone"; passes 1; mv "$T/pane.gone" "$T/pane.$COD"; passes 3
+[ "$(grep -c "^send $COD .*qitem-1" "$T/rig.calls")" = 3 ] && [ "$(sends "$OWN")" = 1 ] \
+  && ok "stall: one task never gets more than 3 nudges, whatever the queue or the pane did in between" || bad "stall cap per task" "$(cat "$T/rig.calls")"
+teardown
+
+stall_setup
+cat > "$T/bin/rig" <<STUB
+#!/bin/sh
+echo "\$*" >> "$T/rig.calls"
+[ "\$1 \$2" = "queue list" ] && cat "$T/queue.json" 2>/dev/null
+[ "\$1 \$2" = "send $OWN" ] && [ -f "$T/owner.down" ] && exit 1
+exit 0
+STUB
+touch "$T/owner.down"; passes 6
+[ "$(sends "$OWN")" -ge 1 ] && ! grep -q told_owner "$SD/stalls.jsonl" && grep -q "could not be told" "$SD/log" \
+  && ok "stall: a message to the owner that fails is not recorded as told" || bad "stall owner send fails" "$(cat "$SD/stalls.jsonl" "$SD/log")"
+rm "$T/owner.down"; passes 2
+[ "$(grep -c told_owner "$SD/stalls.jsonl")" = 1 ] && ok "stall: the owner is told once the message can be sent" || bad "stall owner retry" "$(cat "$SD/stalls.jsonl")"
+teardown
+
+# A pi seat's session record says whether its turn has ended.
+stall_setup
+SS="$OPENRIG_HOME/state/pi/$COD/sessions"; mkdir -p "$SS"
+printf '%s\n' '{"type":"message","message":{"role":"user"}}' '{"type":"message","message":{"role":"assistant","stopReason":"toolUse"}}' > "$SS/a.jsonl"
+export FOREMAN_STALL_IDLE=300
+passes 1; printf '%s\n' "$(( $(date +%s) - 400 ))" > "$SD/$COD.stall"; passes 1
+[ "$(sends "$COD")" = 0 ] && ok "stall: a quiet pane while a tool is running is work, not a stall" || bad "stall mid-turn" "$(cat "$T/rig.calls")"
+printf '%s\n' "$(( $(date +%s) - 1300 ))" > "$SD/$COD.stall"; passes 1
+[ "$(sends "$COD")" = 1 ] && ok "stall: a tool that has been silent four times as long is nudged after all" || bad "stall hung tool" "$(cat "$T/rig.calls")"
+printf '%s\n' '{"type":"message","message":{"role":"assistant","stopReason":"length"}}' '{"type":"compaction"}' 'not json' >> "$SS/a.jsonl"
+printf '%s\n' "$(( $(date +%s) - 400 ))" > "$SD/$COD.stall"; passes 1
+[ "$(sends "$COD")" = 2 ] && ok "stall: a reply cut off at its limit has ended the turn, and is nudged at the normal time" || bad "stall length stop" "$(cat "$T/rig.calls")"
+teardown
+
+stall_setup
+mkdir -p "$SD"; ( exec 9>"$SD/lock"; flock -n 9; "$F" unstick "$P" --once >"$T/second.out" 2>&1 9>&- )
+grep -q "another watcher is already running" "$T/second.out" && ok "stall: a second watcher for the same crew does nothing while the first holds the lock" || bad "stall lock" "$(cat "$T/second.out")"
 teardown
 
 stall_setup
@@ -718,8 +763,25 @@ while IFS='|' read -r want cmd; do gcheck "$want" "$cmd" || { allok=0; bad "guar
 0|ls | grep x || true
 0|pnpm install --frozen-lockfile --offline && pnpm test
 2|pnpm install --frozen-lockfile --offline && pnpm install left-pad
+2|git -C "My App" push origin main
+2|git -C 'My App' --no-pager push
+2|git --git-dir="My App/.git" push
+0|git -C "My App" status
+0|pnpm install --frozen-lockfile "--offline"
+0|pnpm install --frozen-lockfile --offline>install.log
+0|pnpm install '--frozen-lockfile' --offline 2>&1
+0|bash -c 'printf "%s\n" "A & B"'
+0|bash -c "printf '%s' 'A & B'"
+2|bash -c "pnpm dev & echo started"
 CASES
-[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (40 cases)"
+[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (50 cases)"
+gcheck 2 "$(printf '%s\n' 'pnpm install --frozen-lockfile --offline' 'pnpm install')" && ok "the 'without' words of one line do not cover a command on the next line" || bad "unless across lines"
+gcheck 0 "$(printf '%s\n' 'pnpm install \' '  --frozen-lockfile --offline')" && ok "a command continued with a backslash is still one command" || bad "line continuation"
+gcheck 2 "$(printf '%s\n' 'cat <<EOF &' 'some text' 'EOF')" && ok "a background & on the line that opens a here-document is still refused" || bad "background on here-document line"
+gcheck 0 "$(printf '%s\n' 'cat > a.ts <<EOF' 'type A = B & C' 'EOF' 'cat > b.ts <<EOF' 'type D = E & F' 'EOF')" && ok "two here-documents with & in their text are both left alone" || bad "two here-documents"
+gcheck 0 "$(printf '%s\n' 'cat <<A <<B' 'x & y' 'A' 'p & q' 'B')" && ok "two here-documents on one command are both left alone" || bad "two here-documents on one line"
+printf '{"bans":[]}\n{"bans":[{"text":"vercel","source":"x"}]}\n' > "$T/two.json"
+printf 'ls' | PATH="$PATH:$(dirname "$(command -v jq)")" "$G" "$T/two.json" --command 2>/dev/null; [ $? -eq 2 ] && ok "a ban file holding two lists is refused whole, not half read" || bad "two-object ban file"
 # A here-document is a file being written. Its text is not read as shell operators.
 doc="$(printf '%s\n' "cat > draft.ts <<'EOF'" 'type A = B & C;' 'const f = (x) => { return x & 1 }' 'EOF')"
 gcheck 0 "$doc" && ok "text inside a here-document is not taken for a background process" || bad "here-document text allowed"
@@ -739,7 +801,11 @@ jq 'del(.hooks.PreToolUse[] | select(.hooks | any(.command == "my-custom-bash-ho
 PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" >/dev/null 2>&1
 # a crew that moved off claude-code still gets its old claude hook removed by --off
 cp "$RIG" "$T/rig.keep"; sed -i 's/runtime: claude-code/runtime: codex/' "$RIG"
+# ...and a seat that used to run on pi still loses its extension
+XO="$OPENRIG_HOME/state/pi/crew-owner@foreman-my-app/agent/extensions/foreman-guard.ts"; mkdir -p "${XO%/*}"; cp "$X" "$XO"
+XE="$OPENRIG_HOME/state/pi/crew-owner@foreman-elsewhere/agent/extensions/foreman-guard.ts"; mkdir -p "${XE%/*}"; cp "$X" "$XE"
 PATH="$PATH:$(dirname "$(command -v jq)")" "$F" bans "$P" --off >/dev/null 2>&1
+[ ! -e "$XO" ] && [ -e "$XE" ] && ok "bans --off also clears a seat that used to run on pi, and no other crew's" || bad "bans off former pi seat" "$(ls "$XO" "$XE" 2>&1)"
 [ "$(jq -r '[.hooks.PreToolUse[] | .matcher] | join(",")' "$C")" = "Edit" ] && [ ! -e "$P/.codex/hooks.json" ] && [ ! -e "$X" ] && [ ! -e "$B" ] \
   && ok "bans --off removes the guard everywhere and leaves other hooks alone" || bad "bans off" "$(cat "$C"; ls "$P/.codex" "$X" "$B" 2>&1)"
 sed -i 's|^banned_cmds: .*|banned_cmds: vercel, supabase|' "$P/.foreman/project.yaml"
@@ -766,12 +832,14 @@ fill_task() { # fill_task <by-eye lines> <examples>
     /^`FILL-ME`/ { print "`timeout 120 true`"; next }
     { print }' "$TF" > "$TF.new" && mv "$TF.new" "$TF"; }
 rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "none"
-out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'need an example' && ok "a check-by-eye rule without an example is refused" || bad "by-eye needs example" "$out"
-rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "$(printf '3. a\n4. b\n5. c\n6. d')" "/** like this */"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'needs its own example' && ok "a check-by-eye rule without an example is refused" || bad "by-eye needs example" "$out"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "$(printf '3. a\n4. b\n5. c\n6. d')" "Rule 3: x Rule 4: x Rule 5: x Rule 6: x"
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'at most 3' && ok "more than three check-by-eye rules are refused" || bad "by-eye cap" "$out"
-rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "4. numbered wrong." "/** like this */"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "4. numbered wrong." "Rule 4: /** like this */"
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'numbered 1, 2, 3' && ok "rules that skip a number are refused" || bad "rule numbering" "$out"
-rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "/** Sorts picked files. */"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "$(printf '3. a\n4. b')" "Rule 3: /** like this */"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 4 needs its own example' && ok "each check-by-eye rule needs its own example, not one for all" || bad "example per rule" "$out"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "Rule 3: /** Sorts picked files. */"
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -eq 0 ] && [ "$(jq -c '[.rules,.by_eye,.proved,.eye,.files]' "$J/ctx/code-1.check.json")" = '[3,1,[1,2],[3],["src/batch.ts"]]' ] \
   && ok "a filled task file is ready, and its rules are recorded" || bad "task ready" "$out"
 R="$J/out/code-1.md"; printf '/** Sorts picked files. */\nexport const NOT_PDF = 1\n' > "$P/src/batch.ts"
@@ -787,6 +855,18 @@ rm "$P/src/stray.ts"
 out="$(res stuck 'notes: rule 3 is unclear')"; [ $? -eq 0 ] && echo "$out" | grep -q 'stuck' && [ "$(jq -r .status "$J/out/code-1.check.json")" = stuck ] && ok "a stuck result is accepted as stuck" || bad "stuck result" "$out"
 teardown
 
+# A task changed after task-check: the stored facts no longer describe it.
+setup
+"$F" init "$P" >/dev/null 2>&1; fill
+mkdir -p "$P/.foreman/jobs/fmn-1/ctx" "$P/.foreman/jobs/fmn-1/out"
+"$F" task "$P" fmn-1 1 >/dev/null; TF="$P/.foreman/jobs/fmn-1/ctx/code-1.task.md"
+fill_task "none" "none"; "$F" task-check "$P" fmn-1 1 >/dev/null 2>&1; rc1=$?
+printf 'kind: code\nstatus: done\nrule 1: command\nrule 2: command\n' > "$P/.foreman/jobs/fmn-1/out/code-1.md"
+sed -i 's|`src/batch.ts`|`src/other.ts`|' "$TF"
+out="$("$F" result-check "$P" fmn-1 1 2>&1)"; rc=$?
+[ "$rc1" = 0 ] && [ "$rc" -ne 0 ] && echo "$out" | grep -q 'changed after task-check' && ok "result-check refuses a task file that changed after task-check" || bad "stale task" "rc1=$rc1 rc=$rc $out"
+teardown
+
 # --- retro and the lessons ledger ---
 setup
 J="$P/.foreman/jobs/fmn-20261120-0900"; mkdir -p "$J/ctx" "$J/out" "$T/qa/runs/r1" "$T/qa/screener"
@@ -795,7 +875,9 @@ printf 'status: stuck\n' > "$J/out/code-1.md"; printf 'status: done\n' > "$J/out
 echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$J/ctx/qa-r1.json"
 echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$T/qa/runs/r1/contract.json"; echo '{"verdict":"fail","gate":"green"}' > "$T/qa/runs/r1/verdict.json"
 echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$J/ctx/qa-r2.json"   # a second round, same issue
-printf '%s\n' '{"issue":"fmn-20261120-0900","repo":"my-app","decision":"send_back"}' '{"issue":"fmn-20261120-0900","repo":"other-project","decision":"send_back"}' '{"issue":"fmn-20261120-0900","repo":"my-app","decision":"overridden"}' > "$T/qa/screener/log.jsonl"
+NOWISH="$(date -u -d '+1 minute' +%FT%TZ)"
+printf '%s\n' "{\"at\":\"$NOWISH\",\"issue\":\"fmn-20261120-0900\",\"repo\":\"my-app\",\"decision\":\"send_back\"}" "{\"at\":\"$NOWISH\",\"issue\":\"fmn-20261120-0900\",\"repo\":\"other-project\",\"decision\":\"send_back\"}" "{\"at\":\"$NOWISH\",\"issue\":\"fmn-20261120-0900\",\"repo\":\"my-app\",\"decision\":\"overridden\"}" \
+  '{"at":"2020-01-01T00:00:00Z","issue":"fmn-20261120-0900","repo":"my-app","decision":"send_back"}' '{"at":"2020-01-01T00:00:00Z","issue":"fmn-20261120-0900","repo":"my-app","decision":"overridden"}' > "$T/qa/screener/log.jsonl"
 # Builder nudges: the watcher's records made since this job's folder began count, older ones do not.
 mkdir -p "$OPENRIG_HOME/foreman-unstick/foreman-my-app"
 printf '%s\n' '{"at":"2020-01-01T00:00:00Z","seat":"crew-coder@foreman-my-app","item":"q0","nudge":1}' \
@@ -806,8 +888,8 @@ printf '%s\n' '{"at":"2020-01-01T00:00:00Z","seat":"crew-coder@foreman-my-app","
 out="$(QA_HOME="$T/qa" "$F" retro "$P" fmn-20261120-0900 2>&1)"
 [ "$(jq -c '[.coder_nudges,.coder_gave_up]' "$J/retro.json")" = '[2,1]' ] \
   && ok "retro counts the watcher's builder nudges made during the job" || bad "retro nudges" "$(cat "$J/retro.json")"
-[ "$(jq -c '[.checker_blocks,.checker_passes,.coder_tasks,.coder_stuck,.qa_contracts,.qa_verdicts[0],.screener_send_backs,.screener_overruled]' "$J/retro.json")" = '[1,1,2,1,2,"fail at green",1,1]' ] \
-  && ok "retro counts rounds, coder tasks and QA verdicts, and each screener row once across QA rounds and only for this project" || bad "retro numbers" "$(cat "$J/retro.json") $out"
+[ "$(jq -c '[.checker_blocks,.checker_passes,.coder_tasks,.coder_stuck,.qa_contracts,.qa_verdicts,.screener_send_backs,.screener_overruled]' "$J/retro.json")" = '[1,1,2,1,2,["fail at green"],1,1]' ] \
+  && ok "retro counts rounds and coder tasks, one verdict per QA run, and screener rows only for this project and since the job began" || bad "retro numbers" "$(cat "$J/retro.json") $out"
 grep -q 'checker blocks: 1' "$J/ctx/retro.task.md" && grep -q "lesson \"$P\" fmn-20261120-0900" "$J/ctx/retro.task.md" \
   && ok "retro writes a task file with the numbers and the exact command" || bad "retro task" "$(cat "$J/ctx/retro.task.md")"
 L="$P/.foreman/habits.jsonl"
@@ -868,8 +950,15 @@ done <<'CASES'
 2|grep -r probe HOME/.foreman-qa/runs/
 2|ROOT/scripts/qa verdict MNS-9
 2|bash -c "cd HOME/.foreman-qa && ls"
+2|rig send crew-checker@foreman-my-app ask crew-owner@foreman-my-app first
+2|rig send crew-checker@foreman-my-app "crew-owner@foreman-my-app"
+2|rig queue create --destination crew-coder@foreman-my-app --summary crew-owner@foreman-my-app
+2|rig queue create --destination crew-owner@foreman-my-app --destination crew-coder@foreman-my-app
+2|rig queue create --summary crew-owner@foreman-my-app
+0|rig queue create --destination=crew-owner@foreman-my-app --body-file job.md
+0|rig send "crew-owner@foreman-my-app" "the checker said no"
 CASES
-[ "$allok" -eq 1 ] && ok "the front guard lets a message to the lead through and refuses every other seat and the QA rig (17 cases)"
+[ "$allok" -eq 1 ] && ok "the front guard lets a message to the lead through and refuses every other seat and the QA rig (24 cases); it reads who a message goes to, not who it mentions"
 out2="$(PATH="$JQP" "$F" front "$P" 2>&1)"
 [ "$(jq '[.hooks.PreToolUse[].hooks[].command | select(test("foreman-guard"))] | length' "$S")" = 1 ] && [ "$(jq '.permissions.deny | length' "$S")" = 1 ] && [ "$(jq -c '.enabledPlugins' "$S")" = '{"mine@me":true,"rpi@hl":true}' ] \
   && ok "running front twice adds nothing twice and keeps the plugins" || bad "front idempotent" "$(cat "$S")"

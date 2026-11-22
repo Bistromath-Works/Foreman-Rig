@@ -725,6 +725,24 @@ jq '.screener = "openrouter" | .screener_fallback = "liquid/d1.2-ultra"' "$T/kee
 echo 200 > "$T/curl/status"; jq -n '{answers:{item_0:{type:"noul",noul:0.9}, item_1:{type:"noul",noul:0.45}}}' > "$T/curl/answer.json"; : > "$T/curl/models"; n="$(queued)"
 out="$(SCREEN_THRESHOLDS="$T/thr.json" send "$c2")"
 same "an unusable answer from the first model goes to the fallback, judged by the fallback's own threshold" "$(queued) $(tr '\n' ' ' < "$T/curl/models")$(last_log '.decision + " " + .model + " " + (.threshold | tostring)')" "$n typesafe/jev-1.14 liquid/d1.2-ultra send_back liquid/d1.2-ultra 0.6"
+# an empty reply with HTTP 200 is as unusable as a wrong one
+cat > "$T/bin/curl" <<'SH'
+#!/bin/sh
+out=""; body=""
+cat > "$CURL_DIR/config"
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; --data-binary) body="${2#@}"; shift ;; esac; shift; done
+cp "$body" "$CURL_DIR/body.json"; jq -r .model "$body" >> "$CURL_DIR/models"
+if [ "$(jq -r .model "$body")" = "liquid/d1.2-ultra" ]; then cat "$CURL_DIR/answer.json" > "$out"; else : > "$out"; fi
+printf 200
+SH
+jq -n '{answers:{item_0:{type:"noul",noul:0.9}, item_1:{type:"noul",noul:0.9}}}' > "$T/curl/answer.json"; : > "$T/curl/models"
+out="$(SCREEN_THRESHOLDS="$T/thr.json" send "$c2")"
+same "an empty reply from the first model goes to the fallback" "$(tr '\n' ' ' < "$T/curl/models")$(last_log '.decision + " " + .model')" "typesafe/jev-1.14 liquid/d1.2-ultra no_objection liquid/d1.2-ultra"
+# the fallback is asked its own questions: rule questions only if it has a rule threshold
+jq '{"typesafe/jev-1.14": {untouched_below: 0.3}, "liquid/d1.2-ultra": {untouched_below: 0.3, rule_broken_at: 0.7}}' -n > "$T/thr2.json"; : > "$T/curl/models"
+out="$(SCREEN_THRESHOLDS="$T/thr2.json" send "$c2")"
+same "a fallback with a rule threshold is asked the rule questions, though the first model was not" "$(jq -r '.model + " " + ([.questions | keys[] | select(startswith("rule_"))] | length | tostring)' "$T/curl/body.json")" "liquid/d1.2-ultra 4"
+grep -q 'SCREEN_MAX_DIFF_CHARS:-200000' "$SCREEN" && grep -q 'jq -Rs length' "$SCREEN" && ok "the size limit is 200,000 by default and counts characters" || bad "the size limit default"
 # the hunk splitter: a removed line that starts with "-- ", a deleted file, a name with a space
 git -C "$R" checkout -q -b hbase "$BASE"; printf -- '-- an old comment\nselect 1;\n' > "$R/q.sql"; echo gone > "$R/gone.txt"; echo x > "$R/y space.txt"
 git -C "$R" add -A; git -C "$R" commit -qm hbase; HBASE="$(git -C "$R" rev-parse HEAD)"
