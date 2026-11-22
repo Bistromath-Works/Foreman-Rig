@@ -8,6 +8,7 @@
 #   scripts/foreman unstick <project> [--once]   press Enter on OpenRig messages left unsent (up starts it)
 #   scripts/foreman tracing <project> [--off]    send every seat's traces to Langfuse (keys from env)
 #   scripts/foreman bans    <project> [--off]    make every seat's runtime refuse the banned commands (up does this)
+#   scripts/foreman front   <project> [--plugin <id>]   set up the human's front seat: a folder whose agent can reach the lead only
 #   scripts/foreman task    <project> <job-id> <n>          write the skeleton of builder task <n> for the owner to fill in
 #   scripts/foreman task-check   <project> <job-id> <n>     refuse a task file that is not ready to hand over
 #   scripts/foreman result-check <project> <job-id> <n>     check the builder's result against the task and the checkout
@@ -34,7 +35,7 @@ PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_pa
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # --- resolve the project and its rig file -------------------------------------------------
 
@@ -686,6 +687,60 @@ cmd_bans() {
   say "Restart the crew so every seat loads it: scripts/foreman down $PROJECT && scripts/foreman up $PROJECT"
 }
 
+# --- the front seat -------------------------------------------------------------------------
+# The front seat is the human's own agent session (Claude Code, in whatever app runs it), in a
+# folder of its own: ~/front/<project name>. There the human works out a job and the agent writes
+# the issue and hands the job to the lead. The folder's settings, not its prompt, keep that
+# session away from every other seat:
+#   - the command guard refuses `rig send` and `rig queue` unless the command names the lead,
+#     and any command that names the QA rig, its home folder or its command
+#   - a deny rule refuses reading the QA rig's home folder
+# One folder per project, all made the same way, so a new project needs only this command.
+FRONT_TEMPLATE="$ROOT/front.template.md"
+
+cmd_front() {
+  local arg project="" plugins=() want="" dir lead qa_home qa_rig list hook text k
+  for arg in "$@"; do
+    if [ -n "$want" ]; then plugins+=("$arg"); want=""; continue; fi
+    case "$arg" in --plugin) want=1 ;; -*) die "unknown option: $arg" ;; *) [ -z "$project" ] || die "front takes one project path"; project="$arg" ;; esac
+  done
+  [ -z "$want" ] || die "--plugin needs a plugin id, e.g. --plugin name@marketplace"
+  resolve "$project"; require_rig_file
+  command -v node >/dev/null 2>&1 || die "node is needed to edit the JSON settings files (OpenRig needs it too)"
+  command -v jq >/dev/null 2>&1 || die "jq is needed for the command guard"
+  [ -f "$FRONT_TEMPLATE" ] || die "missing $FRONT_TEMPLATE"
+  dir="${FOREMAN_FRONT_HOME:-$HOME/front}/$SLUG"
+  lead="crew-owner@$RIG_NAME"
+  qa_home="${QA_HOME:-$HOME/.foreman-qa}"; qa_rig="${QA_RIG:-foreman-qa}"
+  list="$dir/.foreman-front/bans.json"
+  mkdir -p "$dir/.claude" "$dir/.foreman-front" "$PROJECT/.foreman/inbox"
+  jq -n --arg dir "$dir" --arg lead "$lead" --args '
+    {project: $dir, background: false,
+     bans: ([("rig send", "rig queue") | {text: ., unless: [$lead], source: "front seat: the lead is the only seat it may message"}]
+          + [$ARGS.positional[] | {text: ., anywhere: true, source: "front seat: the QA rig is out of reach"}])}' \
+    "$qa_rig" "$qa_home" "$ROOT/scripts/qa" >"$list.tmp" && mv "$list.tmp" "$list"
+  hook="$(printf '%q %q' "$ROOT/scripts/foreman-guard" "$list")"
+  FILE="$dir/.claude/settings.json" HOOK="$hook" OFF=0 MATCH="Bash" json_edit "$BAN_EDIT"
+  FILE="$dir/.claude/settings.json" QA="$qa_home" PROJ="$PROJECT" PLUGINS="$(printf '%s\n' "${plugins[@]}")" json_edit '
+    const add = (a, v) => (a.includes(v) ? a : a.concat([v]));
+    j.permissions = j.permissions || {};
+    j.permissions.deny = add(j.permissions.deny || [], "Read(/" + env.QA + "/**)");
+    j.permissions.additionalDirectories = add(j.permissions.additionalDirectories || [], env.PROJ);
+    for (const p of env.PLUGINS.split("\n").filter(Boolean)) (j.enabledPlugins = j.enabledPlugins || {})[p] = true;
+    return j;'
+  text="$(cat "$FRONT_TEMPLATE")"
+  for k in "LEAD=$lead" "PROJECT=$PROJECT" "NAME=$SLUG"; do text="${text//"{{${k%%=*}}}"/"${k#*=}"}"; done
+  printf '%s\n' "$text" >"$dir/CLAUDE.md"
+  say "front seat for $RIG_NAME: $dir"
+  say "  may message:  $lead (and no other seat)"
+  say "  out of reach: the QA rig ($qa_rig), $qa_home, $ROOT/scripts/qa"
+  say "  hands jobs over as files in $PROJECT/.foreman/inbox/"
+  [ "${#plugins[@]}" -eq 0 ] || say "  plugins on in this folder: ${plugins[*]}"
+  say ""
+  say "Open that folder as a project in the app you run Claude Code in. This covers Claude Code only."
+  say "Check it once: ask the session to read a file under $qa_home; it must be refused."
+}
+
 # --- builder task files ---------------------------------------------------------------------
 # A builder task is all the builder knows, so what it must do and how it must report travel in
 # the task file itself, not in its role. The skeleton comes from here; the owner fills it in;
@@ -985,6 +1040,7 @@ case "$cmd" in
   tracing) cmd_tracing "$@" ;;
   unstick) cmd_unstick "$@" ;;
   bans) cmd_bans "$@" ;;
+  front) cmd_front "$@" ;;
   task) cmd_task "$@" ;;
   task-check) cmd_task_check "$@" ;;
   result-check) cmd_result_check "$@" ;;

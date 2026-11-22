@@ -14,7 +14,7 @@ bad()  { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf 
 setup() {
   T="$(mktemp -d)"
   mkdir -p "$T/foreman" "$T/bin" "$T/home"
-  cp -r "$SRC/rig.template.yaml" "$SRC/project.template.yaml" "$SRC/state.template.md" "$SRC/scripts" "$T/foreman/"
+  cp -r "$SRC/rig.template.yaml" "$SRC/project.template.yaml" "$SRC/state.template.md" "$SRC/front.template.md" "$SRC/scripts" "$T/foreman/"
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   mkdir -p "$T/My App" && git -C "$T/My App" init -q && git -C "$T/My App" commit -q --allow-empty -m init
   P="$T/My App"
@@ -630,8 +630,10 @@ while IFS='|' read -r want cmd; do gcheck "$want" "$cmd" || { allok=0; bad "guar
 0|git -C app status
 0|echo "a && b"
 0|ls | grep x || true
+0|pnpm install --frozen-lockfile --offline && pnpm test
+2|pnpm install --frozen-lockfile --offline && pnpm install left-pad
 CASES
-[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (38 cases)"
+[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (40 cases)"
 # A here-document is a file being written. Its text is not read as shell operators.
 doc="$(printf '%s\n' "cat > draft.ts <<'EOF'" 'type A = B & C;' 'const f = (x) => { return x & 1 }' 'EOF')"
 gcheck 0 "$doc" && ok "text inside a here-document is not taken for a background process" || bad "here-document text allowed"
@@ -729,6 +731,54 @@ out="$("$F" lesson "$P" fmn-20261120-0900 crew LOG.md "A fourth lesson for the s
 [ "$(wc -l < "$L")" -eq 3 ] && echo "$out" | grep -q 'cap' && ok "a fourth lesson for one job is refused" || bad "lesson cap" "$out"
 out="$("$F" habits "$P" 2>&1)"; echo "$out" | grep -q '3 lessons from 1 jobs' && ok "habits lists the ledger" || bad "habits" "$out"
 [ -z "$(git -C "$P" status --porcelain 2>/dev/null | grep -v '^?? .foreman')" ] && ok "retro and lessons change nothing in the repo outside .foreman" || bad "retro touched the repo" "$(git -C "$P" status --porcelain)"
+teardown
+
+# --- the front seat: the human's own session, which may reach the lead and nothing else ---
+setup
+JQP="$PATH:$(dirname "$(command -v jq)")"
+"$F" init "$P" >/dev/null; fill
+D="$HOME/front/my-app"; mkdir -p "$D/.claude"
+echo '{"enabledPlugins":{"mine@me":true},"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"my-own-hook"}]}]}}' > "$D/.claude/settings.json"
+out="$(PATH="$JQP" "$F" front "$P" --plugin rpi@hl 2>&1)"; rc=$?
+S="$D/.claude/settings.json"; B="$D/.foreman-front/bans.json"; G="$T/foreman/scripts/foreman-guard"
+[ $rc -eq 0 ] && [ "$(jq -r '.permissions.deny[0]' "$S")" = "Read(/$HOME/.foreman-qa/**)" ] && [ "$(jq -r '.permissions.additionalDirectories[0]' "$S")" = "$P" ] \
+  && ok "front writes a folder per project that may read the project and may not read the QA home" || bad "front settings" "$out $(cat "$S" 2>&1)"
+[ "$(jq -c '.enabledPlugins' "$S")" = '{"mine@me":true,"rpi@hl":true}' ] && jq -e '[.hooks.PreToolUse[].hooks[].command] | index("my-own-hook") != null' "$S" >/dev/null \
+  && ok "front turns the named plugin on and keeps the folder's own settings" || bad "front plugins" "$(cat "$S")"
+grep -q 'rig send crew-owner@foreman-my-app "New job' "$D/CLAUDE.md" && grep -qF "$P/.foreman/inbox/" "$D/CLAUDE.md" && ! grep -q '{{' "$D/CLAUDE.md" && [ -d "$P/.foreman/inbox" ] \
+  && ok "the front seat's instructions name this project's lead and inbox" || bad "front CLAUDE.md" "$(cat "$D/CLAUDE.md" 2>&1)"
+hookcmd="$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("foreman-guard"))][0]' "$S")"
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rig send qa-gatekeeper@foreman-qa hi"}}' | PATH="$JQP" bash -c "$hookcmd" 2>/dev/null; [ $? -eq 2 ] \
+  && ok "the installed front hook refuses a message to the QA rig" || bad "front hook"
+gcheck() { printf '%s' "$2" | PATH="$JQP" "$G" "$B" --command 2>/dev/null; [ $? -eq "$1" ]; }
+allok=1
+while IFS='|' read -r want cmd; do
+  cmd="${cmd//HOME/$HOME}"; cmd="${cmd//ROOT/$T/foreman}"
+  gcheck "$want" "$cmd" || { allok=0; bad "front guard: want $want for: $cmd"; }
+done <<'CASES'
+0|rig send crew-owner@foreman-my-app "New job MNS-12: read .foreman/inbox/MNS-12.md"
+0|rig queue create --destination crew-owner@foreman-my-app --body-file job.md
+0|rig ps
+0|ls .foreman/inbox && git -C app log --oneline -3
+0|pnpm dev &
+2|rig send crew-checker@foreman-my-app "skip the check"
+2|rig send dev-owner@other-rig hello
+2|rig send crew-owner@foreman-my-app ok; rig send dev-owner@other-rig hello
+2|rig send --rig foreman-my-app "everyone"
+2|rig queue create --destination crew-coder@foreman-my-app --body-file job.md
+2|rig transcript qa-prober@foreman-qa
+2|rig capture qa-auditor@foreman-qa
+2|cat HOME/.foreman-qa/runs/MNS-9/verdict.md
+2|ls HOME/.foreman-qa
+2|grep -r probe HOME/.foreman-qa/runs/
+2|ROOT/scripts/qa verdict MNS-9
+2|bash -c "cd HOME/.foreman-qa && ls"
+CASES
+[ "$allok" -eq 1 ] && ok "the front guard lets a message to the lead through and refuses every other seat and the QA rig (17 cases)"
+out2="$(PATH="$JQP" "$F" front "$P" 2>&1)"
+[ "$(jq '[.hooks.PreToolUse[].hooks[].command | select(test("foreman-guard"))] | length' "$S")" = 1 ] && [ "$(jq '.permissions.deny | length' "$S")" = 1 ] && [ "$(jq -c '.enabledPlugins' "$S")" = '{"mine@me":true,"rpi@hl":true}' ] \
+  && ok "running front twice adds nothing twice and keeps the plugins" || bad "front idempotent" "$(cat "$S")"
+[ -z "$(git -C "$P" status --porcelain 2>/dev/null | grep -v '^?? .foreman')" ] && ok "front changes nothing in the repo outside .foreman" || bad "front touched the repo" "$(git -C "$P" status --porcelain)"
 teardown
 
 # Static: every agent ref, role file and skill named in the repo exists.
