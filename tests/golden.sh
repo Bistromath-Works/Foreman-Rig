@@ -37,6 +37,11 @@ sed -i 's/^gate_green() {$/gate_green() { return 1/' "$T/scripts/qa"
 "$T/scripts/golden" --json "$T/broken.json" noop-fix >"$T/brokengate.txt" 2>&1; rc=$?
 [ "$rc" -ne 0 ] && grep -q 'BROKEN: gate green gave no result' "$T/brokengate.txt" && [ "$(jq -r '.[0].caught_by' "$T/broken.json")" = "" ] \
   && ok "a gate that stops without recording a result is reported broken, not credited with a catch" || bad "a gate that stops without recording a result is reported broken, not credited with a catch" "$(cat "$T/brokengate.txt")"
+# A gate that runs out of time found nothing: no catch is credited and the score says so.
+cp "$ROOT/scripts/qa" "$T/scripts/qa"; sed -i 's/^gate_green() {$/gate_green() { record "$1" green budget "timed out (test)"; return/' "$T/scripts/qa"
+"$T/scripts/golden" --json "$T/budget.json" noop-fix >"$T/budget.txt" 2>&1; rc=$?
+[ "$rc" -ne 0 ] && grep -q 'caught 0 of 1' "$T/budget.txt" && grep -q 'did not finish: noop-fix' "$T/budget.txt" && [ "$(jq -r '.[0].caught_by' "$T/budget.json")" = "" ] \
+  && ok "a gate that runs out of time is not credited with a catch" || bad "a gate that runs out of time is not credited with a catch" "$(cat "$T/budget.txt")"
 # Asked for the screener and it cannot answer: the run is not as expected.
 mkdir -p "$T/bin"; printf '#!/bin/sh\ncat >/dev/null\nwhile [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; esac; shift; done\necho "{}" > "$out"; printf 503\n' > "$T/bin/curl"; chmod +x "$T/bin/curl"
 PATH="$T/bin:$PATH" OPENROUTER_API_KEY=sk-test "$ROOT/scripts/golden" --screener rule-broken secret-added >"$T/noscreen.txt" 2>&1; rc=$?

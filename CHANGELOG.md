@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Second review of the unpushed work (CF-22).** 20 findings, none high. Fixed, each with a test:
+  - *Guard.* A git ban now sees through a quoted folder (`git -C "My App" push`). A new line ends
+    a command, so the "without" words of one line no longer cover the next. Quoted words and a
+    redirection glued to a word (`"--offline"`, `--offline>log`) are read as the word. A `&` on
+    the line that opens a here-document is seen; several here-documents and a quoted `&` inside
+    `bash -c '...'` are not mistaken for one. A ban file holding two lists is refused whole.
+  - *Front seat.* The guard reads who a message goes to (the first word after `rig send`, the
+    value of `--destination`), not whether the lead is mentioned somewhere in it.
+  - *Stall watcher.* The three-nudge limit is kept per task, so it survives a pane that cannot
+    be read or another task showing in between. A pi seat is only nudged once its session
+    record shows the turn has ended (or the pane has been still four times as long), so a
+    quiet long command is left alone. Telling the owner is retried until it is sent. One
+    watcher per crew at a time.
+  - *Screener.* An empty reply now goes to the fallback. The fallback is asked its own
+    questions. The size limit counts characters.
+  - *Task files.* `result-check` refuses a task file that changed after `task-check`. Each
+    check-by-eye rule needs its own example, written "Rule N:".
+  - *Retro.* One verdict per QA run; screener rows from before the job began are not counted.
+  - *Audit (clu).* A quoted password inside a lesson is caught before anything is sent. A blank
+    job id does not count. A proposal that would remove a must-keep line is rejected. Audits
+    started together cannot share a record name.
+  - *Golden tasks.* A gate that runs out of time is not credited with a catch.
+  - `bans --off` also clears seats that used to run on pi.
 - **A stalled builder is nudged (CF-28).** On the second real job the builder stopped mid-task
   five times, once for 1 hour 50 minutes, and nothing noticed. The session record shows why:
   each time, the model used its whole reply limit (8,192 tokens) thinking and the turn ended

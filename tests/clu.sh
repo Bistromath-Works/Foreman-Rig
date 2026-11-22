@@ -57,6 +57,11 @@ answer agents/owner/guidance/role.md "$OLD" "$OLD"$'\n   One more line of rule.'
 audit >/dev/null; same "an edit that makes the rulebook longer is rejected" "$(last '.problems | join(";") | test("may not grow")')" "true"
 answer scripts/qa "$OLD" "$OLD" "$J3"
 audit >/dev/null; same "an edit to a file outside the rulebook is rejected" "$(last '.problems | join(";") | test("not a rulebook file")')" "true"
+answer agents/owner/guidance/role.md "$OLD" "$OLD" '["fmn-20261101-0900","fmn-20261103-1400",""]'
+audit >/dev/null; same "a blank job id does not count as a third job" "$(last .status)" "rejected"
+KEEP="$(jq -r '.must_keep["agents/owner/guidance/role.md"][0]' "$ROOT/rulebook.json")"
+answer agents/owner/guidance/role.md "$KEEP" "Reworded so the line is gone." "$J3"
+audit >/dev/null; same "a change that removes a must-keep line is rejected" "$(last '.status + ": " + (.problems | join(";") | test("must keep") | tostring)')" "rejected: true"
 [ -z "$(ls "$T"/out/*.patch 2>/dev/null | sed 1d)" ] && ok "rejected proposals get no patch" || bad "rejected proposals get no patch" "$(ls "$T/out")"
 echo '{"habits":[],"checks":[{"habit":"debug prints left in","check":"a lint rule"}],"proposal":null}' > "$T/answer.json"
 audit >/dev/null; same "no recurring habit: no proposal, and the code-check suggestions are kept" "$(last '.status + " " + (.checks | length | tostring)')" "no proposal 1"
@@ -91,6 +96,9 @@ cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"; : > "$T/calls"
 jq -cn '{at:"x", job:"fmn-20261110-0930", about:"checker", lesson:"The checker missed the pagination token: subsequent requests repeated the first page."}' >> "$T/proj/.foreman/habits.jsonl"
 echo '{"habits":[],"checks":[],"proposal":null}' > "$T/answer.json"
 out="$(audit)"; [ $? -eq 0 ] && [ -s "$T/calls" ] && ok "an ordinary lesson that uses the word token is not mistaken for a secret" || bad "an ordinary lesson that uses the word token is not mistaken for a secret" "$out"
+cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"; : > "$T/calls"
+jq -cn '{at:"x", job:"fmn-20261110-0930", about:"owner", lesson:"The owner wrote password=\"TestPassword123456!\" into the brief."}' >> "$T/proj/.foreman/habits.jsonl"
+out="$(audit)"; [ $? -ne 0 ] && [ ! -s "$T/calls" ] && ok "a quoted password inside a lesson is never sent" || bad "a quoted password inside a lesson is never sent" "$out"
 cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"
 # two audits in the same second get two records, and a rejected one never shows another's patch
 mkdir -p "$T/fakedate"; printf '#!/bin/sh\ncase "$*" in *%%Y%%m%%d-%%H%%M%%S*) echo 20261120-000000 ;; *) exec /usr/bin/date "$@" ;; esac\n' > "$T/fakedate/date"; chmod +x "$T/fakedate/date"
@@ -101,5 +109,8 @@ answer agents/owner/guidance/role.md "not in the file" "x" "$J3"
 out="$(PATH="$T/fakedate:$T/bin:$PATH" OPENROUTER_API_KEY=sk-test CLU_OUT="$T/out" "$CLU" audit "$T/proj" 2>&1)"
 [ "$(ls "$T"/out/*.json | wc -l)" = 2 ] && [ "$(ls "$T"/out/*.patch | wc -l)" = 1 ] && [[ "$out" == *"REJECTED"* && "$out" != *"Nothing was changed. To take it"* ]] \
   && ok "two audits in the same second get their own records; a rejected one shows no patch" || bad "two audits in the same second get their own records; a rejected one shows no patch" "$(ls "$T/out"); $out"
+rm -f "$T"/out/*; answer agents/owner/guidance/role.md "not in the file" "x" "$J3"
+for i in 1 2 3 4; do PATH="$T/fakedate:$T/bin:$PATH" OPENROUTER_API_KEY=sk-test CLU_OUT="$T/out" "$CLU" audit "$T/proj" >/dev/null 2>&1 & done; wait
+[ "$(ls "$T"/out/*.json | wc -l)" = 4 ] && [ "$(cat "$T"/out/*.json | jq -s 'length')" = 4 ] && ok "four audits started together in the same second each get their own whole record" || bad "audits started together" "$(ls -la "$T/out")"
 same "an audit never changes a file in the repo" "$(git -C "$ROOT" status --porcelain)" "$before"
 echo; echo "$pass passed, $failn failed"; [ "$failn" -eq 0 ]

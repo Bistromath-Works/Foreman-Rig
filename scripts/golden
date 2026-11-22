@@ -93,10 +93,12 @@ play() {
         --argjson gates "$(for g in "${GATES[@]}"; do [ -f "$run/gates/$g.json" ] && jq -c '{(.gate): {status, note}}' "$run/gates/$g.json"; done | jq -cs 'add // {}')" '
     $t[0] as $t
     | ($t.expect.verdict == "pass") as $control
-    | ($v != "pass" and ($notrun | not) and ($gates[$g] != null) and (($gates[$g].status == "pass" or $gates[$g].status == "skip") | not)) as $qa_caught
-    | ($v != "pass" and ($qa_caught | not)) as $qa_broken
+    # A run that ran out of time found nothing: it is neither a catch nor a broken gate.
+    | ($v == "budget_exceeded" or ($gates[$g] != null and $gates[$g].status == "budget")) as $timed_out
+    | ($v != "pass" and ($timed_out | not) and ($notrun | not) and ($gates[$g] != null) and (($gates[$g].status == "pass" or $gates[$g].status == "skip") | not)) as $qa_caught
+    | ($v != "pass" and ($timed_out | not) and ($qa_caught | not)) as $qa_broken
     | ($t.expect.caught_by - ["screener"]) as $want_gates
-    | (if $control then $v == "pass" elif $qa_broken then false else ($v == $t.expect.verdict and ($want_gates | index($g)) != null) end) as $qa_ok
+    | (if $control then $v == "pass" elif ($qa_broken or $timed_out) then false else ($v == $t.expect.verdict and ($want_gates | index($g)) != null) end) as $qa_ok
     | ($sc != "not asked") as $asked
     | ([$flags.rules_flagged[]?.id] | sort) as $flagged
     | (if ($asked | not) then null elif ($sc == "skipped" or $sc == "error") then false else $flagged == (($t.expect.flags // []) | sort) end) as $flags_ok
@@ -105,7 +107,8 @@ play() {
     | (if $sc == "send back" then "screener" elif $qa_caught then $g else "" end) as $by
     | {task:$n, defect:$t.defect, screener:$sc, screener_items:$items, screener_flags:$flags, verdict:$v, stopped_at:$g, caught_by:$by, gates:$gates,
        expected:$t.expect, flagged:$flagged, flags_as_expected:$flags_ok, qa_as_expected:$qa_ok, screener_as_expected:$screener_ok,
-       outcome:((if $qa_broken then "BROKEN: gate \($g) gave no result"
+       outcome:((if $timed_out then "ran out of time at gate \($g): nothing was found"
+                 elif $qa_broken then "BROKEN: gate \($g) gave no result"
                  elif $control then (if $by == "" then "passed, as it should" else "false alarm" end)
                  elif $by == "" then "missed"
                  elif ($t.expect.caught_by | index($by)) != null then "caught"
@@ -127,7 +130,8 @@ jq -rs '
   | "score: caught \($d | map(select(.caught_by != "")) | length) of \($d | length) planted defects; \($c | map(select(.caught_by != "")) | length) false alarms on \($c | length) task\(if ($c | length) == 1 then "" else "s" end) the gates should pass",
     (map(select(.flags_as_expected != null)) as $f | if ($f | length) == 0 then empty else
       "screener rule flags: \([$f[] | (.expected.flags // [])[] as $x | select(.flagged | index($x))] | length) of \([$f[] | (.expected.flags // [])[]] | length) planted rule breaks flagged; \([$f[] | .flagged[] as $x | select(((.expected.flags // []) | index($x)) | not)] | length) false flags" end),
-    (($d | map(select(.caught_by == "")) | map(.task + " (" + .defect + ")")) | if length > 0 then "missed: " + join(", ") else empty end),
+    (($d | map(select(.caught_by == "" and (.outcome | startswith("ran out of time") | not))) | map(.task + " (" + .defect + ")")) | if length > 0 then "missed: " + join(", ") else empty end),
+    ((map(select(.outcome | startswith("ran out of time"))) | map(.task)) | if length > 0 then "did not finish: " + join(", ") else empty end),
     ((map(select(.as_expected | not)) | map(.task)) | if length > 0 then "not as expected: " + join(", ") else "every task came out as expected" end)' "$records"
 [ -z "$json_out" ] || jq -s . "$records" >"$json_out"
 jq -es 'all(.[]; .as_expected)' "$records" >/dev/null

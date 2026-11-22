@@ -78,7 +78,7 @@ cmd_check() {
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT   # not local: the trap runs after the function returns
   git -C "$repo" diff --no-color --no-ext-diff "$BASE_SHA...$CAND_SHA" >"$tmp/diff" 2>/dev/null || skip "could not diff $base...$cand"
   [ -s "$tmp/diff" ] || skip "the candidate changes nothing against base"
-  [ "$(wc -c <"$tmp/diff")" -le "$MAX_DIFF_CHARS" ] || skip "diff is over $MAX_DIFF_CHARS characters"
+  [ "$(jq -Rs length <"$tmp/diff")" -le "$MAX_DIFF_CHARS" ] || skip "diff is over $MAX_DIFF_CHARS characters"   # characters, not bytes
   git -C "$repo" diff --name-only "$BASE_SHA...$CAND_SHA" >"$tmp/files"
 
   # The changed hunks, each with its file, for the risk ranking.
@@ -100,6 +100,7 @@ cmd_check() {
   #   item_N  was this done-condition item worked on at all? (never "is it right")
   #   rule_N  does the change break this rule?   (only with a stored threshold for the model)
   #   hunk_N  how risky is this hunk, for the reviewer's reading order
+  build_body() {   # for $SCREEN_MODEL and its $RULE_AT; called again if the fallback is asked
   jq -n --arg m "$SCREEN_MODEL" --rawfile diff "$tmp/diff" --rawfile files "$tmp/files" --rawfile hunks "$tmp/hunks" \
         --slurpfile c "$c" --slurpfile rules "$([ -f "$tmp/norules" ] && echo "$tmp/norules" || echo "$RULES")" \
         --arg rule_at "$RULE_AT" --argjson max "$MAX_HUNKS" '
@@ -131,6 +132,8 @@ cmd_check() {
              "Ordinary logic in one place: a mistake gives a wrong result that a user would notice",
              "Money, permissions, login, deleting or overwriting stored data, database structure, or anything that runs on many records at once"]}}]
          | from_entries))}' >"$tmp/body.json"
+  }
+  build_body
 
   ask() {   # sends $tmp/body.json; prints the HTTP status, or "failed"
     printf 'header = "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
@@ -153,7 +156,8 @@ cmd_check() {
     http="$(ask)"
     if [ "$http" = failed ]; then why="request failed: $(head -c 200 "$tmp/curl.err" | tr '\n' ' ')"; return 1; fi
     if [ "$http" != 200 ]; then why="the model service answered HTTP $http"; return 1; fi
-    items="$(read_items)" || { why="the model's answer was not in the expected form"; return 1; }
+    # An empty reply makes jq succeed with nothing printed, so the text is checked as well.
+    items="$(read_items)" && [ -n "$items" ] || { why="the model's answer was not in the expected form"; return 1; }
   }
   if ! attempt; then
     # The repo may name a fallback model. It is asked when the first one fails in any way (no
@@ -164,7 +168,7 @@ cmd_check() {
       say "screener: $SCREEN_MODEL could not be used ($why); asking the fallback $fb"
       SCREEN_MODEL="$fb"; THRESHOLD="$ft"
       RULE_AT="$(jq -r --arg m "$fb" '.[$m].rule_broken_at // empty' "$THRESHOLDS" 2>/dev/null || true)"; [[ "$RULE_AT" =~ ^0?\.[0-9]+$ ]] || RULE_AT=""
-      jq --arg m "$fb" '.model = $m' "$tmp/body.json" >"$tmp/body2.json" && mv "$tmp/body2.json" "$tmp/body.json"
+      build_body   # the fallback's own questions: it may have a rule threshold where the first model has none
       attempt || skip "$why"
     else
       skip "$why"

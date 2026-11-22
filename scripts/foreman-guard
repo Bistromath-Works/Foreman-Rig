@@ -22,7 +22,8 @@ set -uo pipefail
 bans="${1:-}"; mode="${2:-}"
 refuse() { printf 'Blocked by Foreman: %s\n' "$*" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || refuse "the guard needs jq and cannot find it, so no shell command can run. Tell the human."
-[ -r "$bans" ] && jq -e '.bans | type == "array"' "$bans" >/dev/null 2>&1 \
+# Exactly one JSON object with a list of bans. Two objects in the file would leave the second unread.
+[ -r "$bans" ] && jq -es 'length == 1 and (.[0].bans | type == "array")' "$bans" >/dev/null 2>&1 \
   || refuse "the ban list ($bans) is missing or unreadable, so no shell command can run. Tell the human; they run: scripts/foreman bans <project>"
 
 input="$(cat)"
@@ -40,24 +41,49 @@ fi
 # digit or _ before it, and followed by the end, a space, or a shell separator.
 read -r -d '' MATCH <<'JQ' || true
 def esc: gsub("(?<c>[\\\\^$.|?*+()\\[\\]{}])"; "\\\\\(.c)");
-# The command as typed, with runs of spaces squeezed, and a second copy in which git's own
-# options before the subcommand are dropped, so "git -C app push" reads as "git push".
-($cmd | gsub("\\s+"; " ")) as $raw
-| ($raw | gsub("(?<g>(^|[^A-Za-z0-9_])git)(?<o>( (-C|-c|--git-dir|--work-tree|--namespace|--exec-path) [^ ]+| --(git-dir|work-tree|namespace|exec-path)=[^ ]+| (--no-pager|--paginate|-p|-P|--bare|--no-replace-objects|--literal-pathspecs|--no-optional-locks))+)"; "\(.g)")) as $plain
-# For the background check only: quoted text is blanked, so "&" inside a string is not an
-# operator. A shell handed its script with -c keeps the script, quotes and all.
-# The text of a here-document (<<EOF ... EOF) is a file being written, not commands, so it is
-# cut out too: "type A = B & C" in a draft is not a background process.
-| ($cmd | gsub("<<-?[ \\t]*['\"]?(?<w>[A-Za-z_][A-Za-z0-9_]*)['\"]?[^\\n]*\\n[\\s\\S]*?\\n[ \\t]*\\k<w>(?=\\n|$)"; "<<HEREDOC") | gsub("\\s+"; " ")) as $nodoc
-| (if ($raw | test("(^|[^A-Za-z0-9_])(bash|sh|zsh|dash) (-[a-z]+ )*-[a-z]*c( |$)")) then $raw
-   else ($nodoc | gsub("'[^']*'"; "''") | gsub("\"(\\\\.|[^\"\\\\])*\""; "\"\"")) end) as $bare
+def arg: "(\"[^\"]*\"|'[^']*'|[^ ]+)";
+# The command as typed: a backslash at a line end joins the lines, any other line end closes a
+# command (it becomes ";"), and runs of spaces are squeezed. In a second copy git's own options
+# before the subcommand are dropped, so `git -C "My App" push` reads as "git push".
+($cmd | gsub("\\\\\\n"; " ") | gsub("\\s*\\n\\s*"; " ; ") | gsub("\\s+"; " ")) as $raw
+| ($raw | gsub("(?<g>(^|[^A-Za-z0-9_])git)(?<o>( (-C|-c|--git-dir|--work-tree|--namespace|--exec-path) " + arg + "| --(git-dir|work-tree|namespace|exec-path)=" + arg + "| (--no-pager|--paginate|-p|-P|--bare|--no-replace-objects|--literal-pathspecs|--no-optional-locks))+)"; "\(.g)")) as $plain
+# For the background check only. The text of a here-document (<<EOF ... EOF) is a file being
+# written, not commands, so it is cut out (up to three on one line); the rest of the <<EOF line stays. Quoted text
+# is blanked, so "&" inside a string is not an operator. A script handed to a shell with -c is
+# unwrapped first, so its own operators count and its own strings do not.
+| def blank: gsub("'[^']*'"; "''") | gsub("\"(\\\\.|[^\"\\\\])*\""; "\"\"");
+  def shc: "(?<p>(^|[^A-Za-z0-9_])(bash|sh|zsh|dash) (-[a-z]+ )*-[a-z]*c) ";
+  def nodoc: gsub("<<-?[ \\t]*['\"]?(?<w>[A-Za-z_][A-Za-z0-9_]*)['\"]?(?<rest>[^\\n]*)\\n[\\s\\S]*?\\n[ \\t]*\\k<w>(?=\\n|$)"; "<<-HEREDOC\(.rest)");
+($cmd | nodoc | nodoc | nodoc | gsub("\\s+"; " ")
+   | gsub(shc + "'(?<s>[^']*)'"; "\(.p) ; \(.s) ;")
+   | gsub(shc + "\"(?<s>(\\\\.|[^\"\\\\])*)\""; "\(.p) ; \(.s | gsub("\\\\\""; "\"")) ;")
+   | blank) as $bare
 | def has($c; $t): $c | test("(^|[^A-Za-z0-9_])" + ($t | esc) + "($|[\\s;|&<>)\"'`=])");
-# The words of every command that holds the banned text: the pieces between ; | & and newlines.
-def pieces($t): [$plain | splits("[;|&\\n]+") | select(has(.; $t)) | [splits(" +")]] | if length == 0 then [[""]] else . end;
+# A word of a command: quotes round the whole word are dropped, and so is a redirection glued
+# to it, so "--offline" and --offline>log both read as --offline.
+def word: (if test("^\"[^\"]*\"$") or test("^'[^']*'$") then .[1:-1] else . end) | sub("[<>].*$"; "");
+def words: [splits(" +") | word | select(length > 0)];
+# Every command that holds the banned text (the pieces between ; | & and line ends): its words,
+# and the words that come after the banned text.
+def pieces($t): [$plain | splits("[;|&]+") | select(has(.; $t))
+                 | {w: words, after: (sub("^.*?(^|[^A-Za-z0-9_])" + ($t | esc) + "(?=$|[\\s;|&<>)\"'`=])"; "") | words)}]
+                | if length == 0 then [{w: [], after: []}] else . end;
+# Is the ban lifted for one command? Plain "unless" words must all be among its words. With
+# arg "first", the first word after the banned text that is not an option must be one of them
+# (who a message goes to, not who it mentions). With arg "--flag", the flag must be there and
+# each value given to it must be one of them.
+def lifted($ban):
+  ($ban.unless // []) as $u
+  | if $ban.arg == "first" then ([.after[] | select(startswith("-") | not)] | first // "") as $a | ($u | index($a)) != null
+    elif ($ban.arg // "" | startswith("--")) then
+      ([.after as $a | range(0; $a | length) | $a[.] as $x
+        | if $x == $ban.arg then ($a[. + 1] // "") elif ($x | startswith($ban.arg + "=")) then $x[($ban.arg | length) + 1:] else empty end]) as $v
+      | ($v | length) > 0 and ($v | all(. as $x | $u | index($x) != null))
+    else . as $p | $u | all(. as $x | $p.w | index($x) != null) end;
 first(
   ($b[0].bans[] | . as $ban
     | select(($ban.anywhere == true and ($raw | contains($ban.text))) or has($raw; $ban.text) or has($plain; $ban.text))
-    | select(($ban.unless // []) as $u | ($u | length) == 0 or any(pieces($ban.text)[]; . as $w | $u | all(. as $x | $w | index($x)) | not))
+    | select(($ban.unless // []) | length == 0 or any(pieces($ban.text)[]; lifted($ban) | not))
     | "`\(.text)`\(if (.unless // []) | length > 0 then " without " + (.unless | join(" ")) else "" end) is banned (\(.source))"),
   (select($b[0].background != false)
     | select($bg == "true"
