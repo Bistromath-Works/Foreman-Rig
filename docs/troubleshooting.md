@@ -99,6 +99,27 @@ Pi's prompt has no marker that separates unsent text from what was already sent.
 Not running? Start it with `scripts/foreman unstick <project>` in any terminal, or press Enter
 in the seat's pane yourself; that is always safe.
 
+## The builder sits idle with its task unfinished
+A builder on a small local model can end a turn with nothing done. It thinks until it hits its
+reply limit, the runtime ends the turn, and the seat sits at its prompt with the task still
+claimed. Pi's status line may still say "working". Any message restarts it. On our second job
+this cost 1 hour 50 minutes before a person noticed (CF-28).
+
+Two things deal with it:
+
+- **Give the model room to answer.** In `~/.pi/agent/models.json`, set the model's `maxTokens`
+  to at least 16384 (we had 8192, and every stall was a reply of exactly 8192 tokens, all of it
+  thinking). To see whether this is your problem, look for `"stopReason":"length"` in the
+  seat's session file under `~/.openrig/state/pi/<seat>/sessions/`.
+- **The watcher nudges it.** The same watcher as above looks at the builder seat. When its pane
+  has not changed for 5 minutes and the queue shows a task it claimed and has not handed back,
+  the watcher sends it a message naming the task. After three nudges on the same task it tells
+  the owner once, and stops. It only sends messages; it presses no key in the builder's pane.
+  Nudges are in the watcher's log, and `scripts/foreman retro` counts them (`coder nudges`,
+  `coder gave up`), so a builder that needs waking every task shows up in the numbers.
+
+`FOREMAN_STALL_IDLE=<seconds>` changes the 5 minutes.
+
 ## The owner asks me something I already answered
 The answer isn't in `.foreman/STATE.md`, or the owner didn't read it. Answer once more and tell
 it to record the answer under "Human answers". A crew launched before 2.0.1 doesn't have the

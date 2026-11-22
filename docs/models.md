@@ -111,7 +111,8 @@ so set thinking low or off.
 
 **A local model through Pi.** Add the server to `~/.pi/agent/models.json` as a provider (ours is
 called `vllm`, pointing at `http://127.0.0.1:8000/v1`) and use `vllm/<model name>` as the seat's
-model. `scripts/foreman up` links that file into the seat. The server must be running before
+model. Give the model a `maxTokens` of at least 16384: with 8192, Qwen spent whole replies
+thinking and stopped with nothing written (see troubleshooting, "The builder sits idle"). `scripts/foreman up` links that file into the seat. The server must be running before
 the crew starts, with tool calling switched on. For vLLM and Qwen3.8-27B we run:
 
 ```
