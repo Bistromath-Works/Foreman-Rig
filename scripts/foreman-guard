@@ -43,51 +43,79 @@ fi
 # and operators. Nothing is run or expanded.
 read -r -d '' MATCH <<'JQ' || true
 def esc: gsub("(?<c>[\\\\^$.|?*+()\\[\\]{}])"; "\\\\\(.c)");
-def has($c; $t): $c | test("(^|[^A-Za-z0-9_])" + ($t | esc) + "($|[\\s;|&<>)\"'`=])");
-# Tokens: a word (with its quotes), a line end, a run of ; | & ( ), or a redirection.
-def toks: [match("(?:[^\\s\"'\\\\;|&<>()]|\\\\[\\s\\S]|\"(?:\\\\[\\s\\S]|[^\"\\\\])*\"|'[^']*')+|\\n|[;|&()]+|[<>]+&?"; "g").string];
+# The words of a ban may be any number of spaces apart, on one line.
+def has($c; $t): $c | test("(^|[^A-Za-z0-9_])" + ($t | esc | gsub(" +"; "[ \\t]+")) + "($|[\\s;|&<>)\"'`=])");
+# Tokens: a comment (dropped), a redirection with the number before it (2> &> >& <<), a word
+# (with its quotes), a line end, or a run of ; | & ( ).
+def toks: [match("(?:(?<=[\\s;|&()])|^)#[^\\n]*|(?:[0-9]+(?=[<>]))?(?:&>>?|[<>]+[&|]?)|(?:[^\\s\"'\\\\;|&<>()]|\\\\[\\s\\S]|\"(?:\\\\[\\s\\S]|[^\"\\\\])*\"|'[^']*')+|\\n|[;|&()]+"; "g").string
+           | select(startswith("#") | not)];
 def isop: test("^(\\n|[;|&()]+)$");
-def isredir: test("^[<>]+&?$");
-# A word as the program would receive it: quotes and backslashes taken off.
-def unq: gsub("\"(?<d>(\\\\[\\s\\S]|[^\"\\\\])*)\"|'(?<s>[^']*)'|\\\\(?<e>[\\s\\S])";
-              if .d != null then (.d | gsub("\\\\(?<c>[\\s\\S])"; .c)) elif .s != null then .s else (.e // "") end);
-# The commands of a line: the words between operators, without redirections and their targets.
-def cmds: reduce toks[] as $t ([[]]; if ($t | isop) then . + [[]] else .[-1] += [$t] end)
+def isredir: test("^[0-9]*(&>>?|[<>]+[&|]?)$");
+# A word as the program would receive it: quotes taken off. Inside double quotes a backslash
+# only escapes $ ` " \ and a line end, as in the shell.
+def unq: if test("[\"'\\\\]") | not then . else
+  gsub("\"(?<d>(\\\\[\\s\\S]|[^\"\\\\])*)\"|'(?<s>[^']*)'|\\\\(?<e>[\\s\\S])";
+       if .d != null then (.d | if test("\\\\") then gsub("\\\\(?<c>[$`\"\\\\\\n])"; .c) else . end) elif .s != null then .s else (.e // "") end) end;
+# The words between operators, without redirections and their targets.
+def split_cmds: reduce toks[] as $t ([[]]; if ($t | isop) then . + [[]] else .[-1] += [$t] end)
   | map(select(length > 0) | . as $a
-        | [range(0; length) | select(($a[.] | isredir | not) and (. == 0 or ($a[. - 1] | isredir | not))) | $a[.] | unq]);
+        | [range(0; length) | select(($a[.] | isredir | not) and (. == 0 or ($a[. - 1] | isredir | not))) | $a[.]]);
+# Is the script handed to a shell with -c? Only when the shell is what runs: the first word,
+# after any VAR=value and wrappers such as sudo or env. Gives the script, or nothing.
+def script: . as $w
+  | ([range(0; length) | select($w[.] | test("^([A-Za-z_][A-Za-z0-9_]*=.*|sudo|env|exec|command|time|nice|nohup|setsid|timeout|[0-9.]+[smh]?|-[A-Za-z-]+)$") | not)] | first) as $i
+  | if $i != null and ($w[$i] | test("(^|/)(bash|sh|zsh|dash)$")) then
+      first(range($i + 1; length) | select($w[.] | test("^-[a-z]*c$")) | $w[. + 1] // empty) // empty
+    else empty end;
+# The commands of a text, each as its words: the commands themselves, then (three levels deep)
+# those of a script handed to a shell with -c and of anything inside $( ) or backquotes.
+def cmds($depth):
+  (split_cmds[] | map(unq) | ., (if $depth > 0 then (script | cmds($depth - 1)) else empty end)),
+  (if $depth > 0 and test("\\$\\(|`") then
+     (match("\\$\\(([^()]*)\\)|`([^`]*)`"; "g").captures[] | .string // empty | cmds($depth - 1))
+   else empty end);
+def cmds: cmds(3);
 # git's own options before the subcommand are dropped, so `git -C "My App" push` reads as git push.
 def nogit: . as $w
   | reduce range(0; length) as $i ({out: [], skip: 0, git: false};
       if .skip > 0 then .skip -= 1
-      elif .git and (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"] | index($w[$i])) != null then .skip = 1
-      elif .git and ((["--no-pager", "--paginate", "-p", "-P", "--bare", "--no-replace-objects", "--literal-pathspecs", "--no-optional-locks"] | index($w[$i])) != null
-                     or ($w[$i] | test("^--(git-dir|work-tree|namespace|exec-path|config-env)="))) then .
+      elif .git and (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "--super-prefix", "--attr-source"] | index($w[$i])) != null then .skip = 1
+      elif .git and ((["--no-pager", "--paginate", "-p", "-P", "--bare", "--no-replace-objects", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+                       "--no-optional-locks", "--no-lazy-fetch", "--no-advice"] | index($w[$i])) != null
+                     or ($w[$i] | test("^--(git-dir|work-tree|namespace|exec-path|config-env|super-prefix|attr-source)="))) then .
       else .git = ($w[$i] | test("(^|/)git$")) | .out += [$w[$i]] end)
   | .out;
-# A here-document's text (<<EOF ... EOF) is a file being written. For the background check it
-# is cut out (up to three per command); the rest of the line that opens it stays.
-def nodoc: gsub("<<-?[ \\t]*['\"]?(?<w>[A-Za-z_][A-Za-z0-9_]*)['\"]?(?<rest>[^\\n]*)\\n(?:[\\s\\S]*?\\n)??[ \\t]*\\k<w>(?=\\n|$)"; "<<-HEREDOC\(.rest)");
+# A here-document's text (<<EOF ... EOF) is a file being written, so it is cut out; the rest of
+# the line that opens it stays. The end word stands at the start of a line, or after tabs when
+# opened with <<-. Applied up to three times, for several on one command.
+def nodoc:
+    gsub("(?<!<)<<-[ \\t]*['\"]?(?<w>[A-Za-z_][A-Za-z0-9_.-]*)['\"]?(?<rest>[^\\n]*)\\n(?:[\\s\\S]*?\\n)??\\t*\\k<w>(?=\\n|$)"; "<<<HEREDOC\(.rest)")
+  | gsub("(?<!<)<<(?![<-])[ \\t]*['\"]?(?<w>[A-Za-z_][A-Za-z0-9_.-]*)['\"]?(?<rest>[^\\n]*)\\n(?:[\\s\\S]*?\\n)??\\k<w>(?=\\n|$)"; "<<<HEREDOC\(.rest)");
 # Does the text start something in the background? A lone & that is an operator (not &&, |&,
-# &> or one inside quotes), a nohup/setsid/disown word, or the same inside a script handed to a
-# shell with -c.
+# ;& in a case, one inside $(( )) or one inside quotes), a nohup/setsid/disown word, or the
+# same inside a script handed to a shell with -c.
 def bg: . as $s
-  | ($s | toks) as $a
-  | any(range(0; $a | length); ($a[.] | (isop and test("(^|[^&|])&($|[^&])"))) and (($a[. + 1] // "") | test("^>") | not))
-    or any($s | cmds[]; . as $w
-         | any($w[]; test("^(nohup|setsid|disown)$"))
-           or any(range(1; $w | length); ($w[.] | test("^-[a-z]*c$")) and any($w[0:.][]; test("(^|/)(bash|sh|zsh|dash)$")) and (($w[. + 1] // "") | bg)));
-# A backslash at a line end joins the lines, as the shell does. $raw is the command as typed
-# with line ends closing a command and spaces squeezed; $cs is each command as its words.
+  | (reduce ($s | toks)[] as $t ({ar: false, hit: false};
+       if ($t | isop) and ($t | test("\\(\\(")) then .ar = true
+       elif ($t | isop) and ($t | test("\\)\\)")) then .ar = false
+       elif (.ar | not) and ($t | isop) and ($t | test("(^|[^&|;])&($|[^&])")) then .hit = true else . end) | .hit)
+    or any($s | split_cmds[] | map(unq); any(.[]; test("^(nohup|setsid|disown)$")) or (([script] | first // null) as $x | $x != null and ($x | bg)));
+# A backslash at a line end joins the lines, as the shell does. $raw is the command as typed.
+# $cs is every command as its words, read
+# from the text without here-document bodies (a body is still searched as text, through $raw).
 ($cmd | gsub("\\\\\\n"; "")) as $src
-| ($src | gsub("\\s*\\n\\s*"; " ; ") | gsub("\\s+"; " ")) as $raw
-| [$src | cmds[] | nogit | {w: ., s: (join(" ") | gsub("\\s+"; " "))}] as $cs
+| ($src | nodoc | nodoc | nodoc) as $lean
+| $src as $raw
+| [$lean | cmds | nogit | {w: ., s: join(" ")}] as $cs
 | ([$cs[].s] | join(" ; ")) as $plain
-# Every command that holds the banned text: its words, and the words after the banned text.
+# Every command that has the banned text as its own words: those words, and the words after the
+# text. A command that only carries the text inside one word (a quoted message, a script it
+# hands on) is judged by the commands inside it. Text found nowhere as words is not lifted.
 | def pieces($t): ($t | split(" ")) as $tw
-    | [$cs[] | select(has(.s; $t)) | .w as $w
-       | {w: $w, after: (first(range(0; $w | length)
-                               | select(($w[.] == $tw[0] or ($w[.] | endswith("/" + $tw[0]))) and $w[. + 1:. + ($tw | length)] == $tw[1:])
-                               | $w[. + ($tw | length):]) // [])}]
+    | [$cs[] | .w as $w
+       | first(range(0; $w | length)
+               | select(($w[.] == $tw[0] or ($w[.] | endswith("/" + $tw[0]))) and $w[. + 1:. + ($tw | length)] == $tw[1:])
+               | {w: $w, after: $w[. + ($tw | length):]})]
     | if length == 0 then [{w: [], after: []}] else . end;
 # Is the ban lifted for one command? Plain "unless" words must all be among its words. With
 # arg "first", the first word after the banned text that is not an option must be one of them
@@ -107,11 +135,12 @@ first(
     | select(($ban.unless // []) | length == 0 or any(pieces($ban.text)[]; lifted($ban) | not))
     | "`\(.text)`\(if (.unless // []) | length > 0 then " without " + (.unless | join(" ")) else "" end) is banned (\(.source))"),
   (select($b[0].background != false)
-    | select($bg == "true" or ($src | nodoc | nodoc | nodoc | bg))
+    | select($bg == "true" or ($lean | bg))
     | "background processes are banned (built-in)")
 ) // empty
 JQ
-hit="$(jq -rn --arg cmd "$cmd" --arg bg "$bg" --slurpfile b "$bans" "$MATCH" 2>/dev/null)" \
+# The command goes in as a file, not an argument: a long one would not fit on a command line.
+hit="$(jq -rn --rawfile cmd <(printf '%s' "$cmd") --arg bg "$bg" --slurpfile b "$bans" "$MATCH" 2>/dev/null)" \
   || refuse "the guard could not check this command, so it was not run. Tell the human."
 [ -z "$hit" ] || refuse "$hit. Do not look for another way to run it. If the job needs it, stop and tell the owner, who tells the human."
 exit 0

@@ -42,5 +42,8 @@ and each job's history in `{{PROJECT}}/.foreman/jobs/<job id>/LOG.md`. Read thos
 of a session and when the human asks how a job went, and write the outcome to the issue.
 
 When those files show a job merged, mark its issue done and note the commit. The files decide,
-not a message: no merge shown there, or something in the job still waiting on the human, and
-the issue stays open.
+not a message. Mark an issue done only when all of these hold: the lead's record names that
+issue's own id (a job id alone is not enough), it gives the merge commit, that commit is on
+the base branch (`git -C {{PROJECT}} merge-base --is-ancestor <commit> <base branch>` exits
+0), and nothing in the job still waits on the human. A record that is missing, unclear or
+disagrees with itself, and the issue stays open: say what is missing.

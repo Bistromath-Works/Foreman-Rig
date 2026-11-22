@@ -616,6 +616,21 @@ mkdir -p "$SD"; ( exec 9>"$SD/lock"; flock -n 9; "$F" unstick "$P" --once >"$T/s
 grep -q "another watcher is already running" "$T/second.out" && ok "stall: a second watcher for the same crew does nothing while the first holds the lock" || bad "stall lock" "$(cat "$T/second.out")"
 teardown
 
+# A nudge that could not be sent does not use up one of the three.
+stall_setup
+cat > "$T/bin/rig" <<STUB
+#!/bin/sh
+echo "\$*" >> "$T/rig.calls"
+[ "\$1 \$2" = "queue list" ] && cat "$T/queue.json" 2>/dev/null
+[ "\$1 \$2" = "send $COD" ] && [ -f "$T/coder.down" ] && exit 1
+exit 0
+STUB
+touch "$T/coder.down"; passes 4; rm "$T/coder.down"
+[ "$(cat "$SD/stall-items/$COD/qitem-1")" = "0 0" ] && grep -q "could not be sent" "$SD/log" && ok "stall: a nudge that fails to send is not counted" || bad "stall failed nudge" "$(cat "$SD/stall-items/$COD/qitem-1" 2>&1)"
+: > "$T/rig.calls"; passes 5
+[ "$(sends "$COD")" = 3 ] && ok "stall: the task still gets its three nudges once sending works" || bad "stall nudges after failure" "$(cat "$T/rig.calls")"
+teardown
+
 # State that cannot be trusted or saved must not turn into nudges without end, or stop the watcher.
 stall_setup
 mkdir -p "$SD/stall-items/$COD/qitem-1"            # the count for this task cannot be written
@@ -801,8 +816,37 @@ while IFS='|' read -r want cmd; do gcheck "$want" "$cmd" || { allok=0; bad "guar
 0|echo "It's fine & dandy" 'and "so" is this & that'
 0|git -C My\ App status
 0|grep -c "a;b" notes.txt
+2|echo "$(git -C repo push)"
+2|bash -c 'git -C repo push'
+2|sudo sh -c "cd app && git -C . push"
+2|echo `git -C repo push`
+2|git 2>err push
+2|git &>log push
+2|sleep 1 & >log
+2|pnpm install # --frozen-lockfile --offline
+2|git --icase-pathspecs push
+2|pnpm install --frozen-lockfile "\--offline"
+0|git status # foreground & diagnostic
+0|pnpm test 2>err.log >out.log
+0|echo $((1 & 3))
+0|printf '%s\n' bash -c 'A & B'
+0|bash -c 'pnpm install --frozen-lockfile --offline && pnpm test'
+0|case $x in a) echo 1 ;& b) echo 2 ;;& esac
+0|for f in *.ts; do wc -l "$f"; done | sort -n | tail -3
+0|find . -name '*.ts' -exec grep -l 'a & b' {} \; | xargs -r wc -l
+0|awk -F'|' '{ if ($1 && $2) print $1 }' data.txt | sed 's/&/and/g'
+0|jq '.a | select(.b and (.c | length) > 0)' file.json > out.json
+0|FOO=1 BAR="a b" pnpm test -- --grep "x & y"
+0|diff <(sort a.txt) <(sort b.txt) || true
+0|cat <<< "one & two"
 CASES
-[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (62 cases)"
+[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (85 cases)"
+gcheck 0 "$(printf '%s\n' "cat > notes.md <<'END-OF-FILE'" 'A & B' 'END-OF-FILE')" && ok "a here-document may end with a word that has hyphens in it" || bad "here-document word with hyphens"
+gcheck 0 "$(printf '%s\n' 'cat <<EOF' ' EOF' 'sleep 1 &' 'EOF')" && ok "an indented end word does not end a here-document opened with <<: what follows is still its text" || bad "indented end word"
+gcheck 2 "$(printf '%s\n' 'cat <<-EOF' '	EOF' 'sleep 1 &')" && ok "after <<- a tab-indented end word does end it, and what follows is a command" || bad "tab-indented end word"
+big="$(printf '%s\n' "cat > big.txt <<'EOF'"; i=0; while [ $i -lt 4000 ]; do echo "line $i of a big file with & and ; and | in it"; i=$((i+1)); done; echo EOF)"
+start="$(date +%s)"; gcheck 0 "$big"; rc=$?; took=$(( $(date +%s) - start ))
+[ "$rc" = 0 ] && [ "$took" -le 5 ] && ok "a 180 KB here-document is checked, and in a few seconds" || bad "big here-document" "rc=$rc took=${took}s"
 gcheck 0 "$(printf '%s\n' 'pnpm install --frozen-lockfile --off\' 'line')" && ok "a word continued across a backslash line end is one word, as in the shell" || bad "word continuation"
 gcheck 2 "$(printf '%s\n' 'cat <<EOF' 'EOF' 'cat <<EOF &' 'text' 'EOF')" && ok "an empty here-document does not hide a background & after it" || bad "empty here-document"
 gcheck 2 "$(printf '%s\n' 'pnpm install --frozen-lockfile --offline' 'pnpm install')" && ok "the 'without' words of one line do not cover a command on the next line" || bad "unless across lines"
@@ -871,6 +915,8 @@ rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "$(printf 
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 4 needs its own example' && ok "each check-by-eye rule needs its own example, not one for all" || bad "example per rule" "$out"
 rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "Rule 3:"
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 3 needs its own example' && ok "a bare 'Rule 3:' label with nothing after it is not an example" || bad "bare label" "$out"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "$(printf 'Rule 3:\n```ts\n```')"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 3 needs its own example' && ok "an empty code block is not an example" || bad "empty fence" "$out"
 rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "$(printf '3. a\n4. b')" "$(printf 'Rule 3:\nRule 4:\n/** like this */')"
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 3 needs its own example' && ! echo "$out" | grep -q 'rule 4 needs' && ok "an example on the lines under its label counts; a label followed straight by the next label does not" || bad "label then label" "$out"
 rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "Rule 3: /** Sorts picked files. */"
@@ -959,6 +1005,7 @@ S="$D/.claude/settings.json"; B="$D/.foreman-front/bans.json"; G="$T/foreman/scr
 grep -q 'rig send crew-owner@foreman-my-app "New job' "$D/CLAUDE.md" && grep -qF "$P/.foreman/inbox/" "$D/CLAUDE.md" && ! grep -q '{{' "$D/CLAUDE.md" && [ -d "$P/.foreman/inbox" ] \
   && ok "the front seat's instructions name this project's lead and inbox" || bad "front CLAUDE.md" "$(cat "$D/CLAUDE.md" 2>&1)"
 grep -q 'mark its issue done and note the commit' "$D/CLAUDE.md" && grep -q 'the issue stays open' "$D/CLAUDE.md" \
+  && grep -q "names that" "$D/CLAUDE.md" && grep -qF "git -C $P merge-base --is-ancestor" "$D/CLAUDE.md" \
   && ok "the front seat closes an issue only when the lead's files show the merge" || bad "front closing rule" "$(cat "$D/CLAUDE.md" 2>&1)"
 hookcmd="$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("foreman-guard"))][0]' "$S")"
 printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rig send qa-gatekeeper@foreman-qa hi"}}' | PATH="$JQP" bash -c "$hookcmd" 2>/dev/null; [ $? -eq 2 ] \
@@ -997,8 +1044,11 @@ done <<'CASES'
 0|rig queue create --destination="crew-owner@foreman-my-app" --body-file job.md
 2|rig queue create --destination="crew-coder@foreman-my-app" --body-file job.md
 2|rig send 'crew-checker@foreman-my-app' "tell crew-owner@foreman-my-app"
+0|bash -c 'rig send crew-owner@foreman-my-app "hello"'
+2|bash -c 'rig send crew-coder@foreman-my-app "hello"'
+0|rig send crew-owner@foreman-my-app "Reply with rig send when you have read it"
 CASES
-[ "$allok" -eq 1 ] && ok "the front guard lets a message to the lead through and refuses every other seat and the QA rig (28 cases); it reads who a message goes to, not who it mentions"
+[ "$allok" -eq 1 ] && ok "the front guard lets a message to the lead through and refuses every other seat and the QA rig (31 cases); it reads who a message goes to, not who it mentions"
 out2="$(PATH="$JQP" "$F" front "$P" 2>&1)"
 [ "$(jq '[.hooks.PreToolUse[].hooks[].command | select(test("foreman-guard"))] | length' "$S")" = 1 ] && [ "$(jq '.permissions.deny | length' "$S")" = 1 ] && [ "$(jq -c '.enabledPlugins' "$S")" = '{"mine@me":true,"rpi@hl":true}' ] \
   && ok "running front twice adds nothing twice and keeps the plugins" || bad "front idempotent" "$(cat "$S")"
