@@ -498,6 +498,92 @@ pass2
 [ -s "$T/keys" ] && ok "unstick: any width of space inside the message still matches" || bad "unstick narrow nbsp"
 teardown
 
+# --- stall: nudge a builder that sits idle on a task it claimed (CF-28) ---
+
+# rig stub: `queue list` prints $T/queue.json; every call is recorded.
+stall_setup() {
+  setup
+  "$F" init "$P" --coder >/dev/null 2>&1; fill coder=pi:vllm/qwen
+  cat > "$T/bin/tmux" <<STUB
+#!/bin/sh
+case "\$1" in
+  capture-pane) t="\$4"; t="\${t#=}"; t="\${t%:}"; [ -f "$T/pane.\$t" ] && cat "$T/pane.\$t" || exit 1 ;;
+  send-keys) echo "\$3 \$4" >> "$T/keys" ;;
+  has-session) exit 1 ;;
+  *) echo "\$*" >> "$T/tmux.calls" ;;
+esac
+STUB
+  cat > "$T/bin/rig" <<STUB
+#!/bin/sh
+echo "\$*" >> "$T/rig.calls"
+[ "\$1 \$2" = "queue list" ] && cat "$T/queue.json" 2>/dev/null
+exit 0
+STUB
+  chmod +x "$T/bin/tmux" "$T/bin/rig"
+  export FOREMAN_UNSTICK_IDLE=0 FOREMAN_STALL_IDLE=0
+  COD="crew-coder@foreman-my-app"; SD="$OPENRIG_HOME/foreman-unstick/foreman-my-app"
+  printf 'reading files\nvllm/qwen · idle\n' > "$T/pane.$COD"
+  echo '[{"qitemId":"qitem-1","state":"in-progress"}]' > "$T/queue.json"
+}
+passes() { local i; for i in $(seq "$1"); do "$F" unstick "$P" --once >/dev/null 2>&1; done; }
+sends() { local n; n="$(grep -c "^send $1 " "$T/rig.calls" 2>/dev/null)" || true; echo "${n:-0}"; }
+
+stall_setup
+passes 2
+[ "$(sends "$COD")" = 1 ] && grep -q "^send $COD .*qitem-1" "$T/rig.calls" \
+  && ok "stall: a builder idle on a claimed task is nudged, and the nudge names the task" || bad "stall nudge" "$(cat "$T/rig.calls" 2>/dev/null)"
+grep -q "$COD: nudged" "$SD/log" && [ "$(jq -r '.seat + " " + .item + " " + (.nudge|tostring)' "$SD/stalls.jsonl")" = "$COD qitem-1 1" ] \
+  && ok "stall: the nudge is logged and recorded" || bad "stall record" "$(cat "$SD/log" "$SD/stalls.jsonl" 2>&1)"
+[ ! -s "$T/keys" ] && ok "stall: no key is pressed in the builder's pane" || bad "stall keys" "$(cat "$T/keys")"
+teardown
+
+stall_setup
+echo '[]' > "$T/queue.json"
+passes 3
+[ "$(sends "$COD")" = 0 ] && ok "stall: an idle builder with no claimed task is left alone" || bad "stall no task" "$(cat "$T/rig.calls")"
+echo '[{"qitemId":"qitem-2","state":"pending"}]' > "$T/queue.json"
+passes 3
+[ "$(sends "$COD")" = 0 ] && ok "stall: a task not yet claimed is not a stall" || bad "stall pending" "$(cat "$T/rig.calls")"
+teardown
+
+stall_setup
+export FOREMAN_STALL_IDLE=300
+passes 3
+[ "$(sends "$COD")" = 0 ] && ok "stall: waits until the pane has been unchanged for the stall time" || bad "stall idle time" "$(cat "$T/rig.calls")"
+printf '1 0 0 -\n' > "$SD/$COD.stall"          # seen long ago...
+printf 'more output\n' >> "$T/pane.$COD"        # ...but the pane has moved since
+passes 1
+[ "$(sends "$COD")" = 0 ] && ok "stall: a pane that changed is a working builder" || bad "stall changed pane" "$(cat "$T/rig.calls")"
+printf '1 0 0 -\n' > "$SD/$COD.stall"
+passes 1
+[ "$(sends "$COD")" = 1 ] && ok "stall: the same pane seen long ago is nudged" || bad "stall aged" "$(cat "$T/rig.calls")"
+teardown
+
+stall_setup
+passes 8
+[ "$(sends "$COD")" = 3 ] && [ "$(sends "$OWN")" = 1 ] && grep -q "^send $OWN .*qitem-1" "$T/rig.calls" \
+  && ok "stall: after 3 nudges the owner is told once, and the builder is not nudged again" || bad "stall cap" "$(cat "$T/rig.calls")"
+grep -q "told the owner" "$SD/log" && ok "stall: telling the owner is logged" || bad "stall owner log" "$(cat "$SD/log")"
+echo '[{"qitemId":"qitem-9","state":"in-progress"}]' > "$T/queue.json"
+passes 1
+[ "$(sends "$COD")" = 4 ] && ok "stall: a new task starts the count over" || bad "stall new task" "$(cat "$T/rig.calls")"
+teardown
+
+stall_setup
+printf 'waiting for the builder\n' > "$T/pane.$OWN"
+passes 3
+[ "$(sends "$OWN")" = 0 ] && ok "stall: only the builder seat is watched for stalls" || bad "stall owner seat" "$(cat "$T/rig.calls")"
+printf 'garbage here\n' > "$SD/$COD.stall"
+"$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "stall: an unreadable state record starts over" || bad "stall garbage state" "rc=$rc"
+teardown
+
+stall_setup
+printf '#!/bin/sh\necho "$*" >> "%s/rig.calls"\n[ "$1 $2" = "queue list" ] && { echo "daemon down" >&2; exit 1; }\nexit 0\n' "$T" > "$T/bin/rig"
+"$F" unstick "$P" --once >/dev/null 2>&1; "$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && [ "$(sends "$COD")" = 0 ] && ok "stall: a queue that cannot be read nudges nobody and does not stop the watcher" || bad "stall queue error" "rc=$rc"
+teardown
+
 unstick_setup
 printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"
 seed_state "$OWN" 18446744073709551616
@@ -710,7 +796,16 @@ echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$J/ctx/qa-r1.json"
 echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$T/qa/runs/r1/contract.json"; echo '{"verdict":"fail","gate":"green"}' > "$T/qa/runs/r1/verdict.json"
 echo '{"issue":"fmn-20261120-0900","candidate":"abc"}' > "$J/ctx/qa-r2.json"   # a second round, same issue
 printf '%s\n' '{"issue":"fmn-20261120-0900","repo":"my-app","decision":"send_back"}' '{"issue":"fmn-20261120-0900","repo":"other-project","decision":"send_back"}' '{"issue":"fmn-20261120-0900","repo":"my-app","decision":"overridden"}' > "$T/qa/screener/log.jsonl"
+# Builder nudges: the watcher's records made since this job's folder began count, older ones do not.
+mkdir -p "$OPENRIG_HOME/foreman-unstick/foreman-my-app"
+printf '%s\n' '{"at":"2020-01-01T00:00:00Z","seat":"crew-coder@foreman-my-app","item":"q0","nudge":1}' \
+  "{\"at\":\"$(date -u -d '+1 minute' +%FT%TZ)\",\"seat\":\"crew-coder@foreman-my-app\",\"item\":\"q1\",\"nudge\":1}" \
+  "{\"at\":\"$(date -u -d '+1 minute' +%FT%TZ)\",\"seat\":\"crew-coder@foreman-my-app\",\"item\":\"q1\",\"nudge\":2}" \
+  "{\"at\":\"$(date -u -d '+1 minute' +%FT%TZ)\",\"seat\":\"crew-coder@foreman-my-app\",\"item\":\"q1\",\"told_owner\":true}" \
+  > "$OPENRIG_HOME/foreman-unstick/foreman-my-app/stalls.jsonl"
 out="$(QA_HOME="$T/qa" "$F" retro "$P" fmn-20261120-0900 2>&1)"
+[ "$(jq -c '[.coder_nudges,.coder_gave_up]' "$J/retro.json")" = '[2,1]' ] \
+  && ok "retro counts the watcher's builder nudges made during the job" || bad "retro nudges" "$(cat "$J/retro.json")"
 [ "$(jq -c '[.checker_blocks,.checker_passes,.coder_tasks,.coder_stuck,.qa_contracts,.qa_verdicts[0],.screener_send_backs,.screener_overruled]' "$J/retro.json")" = '[1,1,2,1,2,"fail at green",1,1]' ] \
   && ok "retro counts rounds, coder tasks and QA verdicts, and each screener row once across QA rounds and only for this project" || bad "retro numbers" "$(cat "$J/retro.json") $out"
 grep -q 'checker blocks: 1' "$J/ctx/retro.task.md" && grep -q "lesson \"$P\" fmn-20261120-0900" "$J/ctx/retro.task.md" \

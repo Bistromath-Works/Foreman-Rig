@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A stalled builder is nudged (CF-28).** On the second real job the builder stopped mid-task
+  five times, once for 1 hour 50 minutes, and nothing noticed. The session record shows why:
+  each time, the model used its whole reply limit (8,192 tokens) thinking and the turn ended
+  with nothing written. The unstick watcher now also watches the builder: pane unchanged for 5
+  minutes with a claimed task still open gets a message naming the task, three times at most,
+  then the owner is told once. `scripts/foreman retro` counts the nudges. The docs now say to
+  give a local model a reply limit of at least 16,384.
 - **The front seat (CF-31).** `scripts/foreman front <project>` makes `~/front/<project name>`:
   a folder for the human's own Claude Code session, where jobs are worked out and written up
   as issues. Its settings let that session message the lead and no other seat, and keep the QA
