@@ -25,6 +25,21 @@
     started together cannot share a record name.
   - *Golden tasks.* A gate that runs out of time is not credited with a catch.
   - `bans --off` also clears seats that used to run on pi.
+- **Third review, of those fixes (CF-22).** 15 findings, none high. Fixed:
+  - *Guard, rebuilt.* The guard now reads a command the way a shell splits it, into words and
+    operators with quotes and backslashes understood, instead of matching patterns over the
+    text. That closes this round's cases together: an apostrophe inside a double-quoted
+    string hiding a `&`, an empty here-document, `git -C My\ App push`, `git --config-env`,
+    a `--destination` inside a quoted message, `--destination="lead"`, and a word continued
+    across a backslash line end. It also now sees a banned command inside `$( )`.
+  - *Audit.* The ledger is copied once and that copy is both scanned and sent. A password in
+    single quotes is caught as well as one in double quotes.
+  - *Stall watcher.* A nudge count is saved before the nudge is sent, and nothing is sent if
+    it cannot be saved. A state file with a stray first line no longer stops the watcher.
+    With no `flock` on the machine the watcher says so.
+  - *Task files.* `task-check` reads one copy of the task for its checks and its digest. A
+    bare "Rule N:" label with nothing after it is not an example.
+  - Three tests that could pass with their fix removed now fail without it.
 - **A stalled builder is nudged (CF-28).** On the second real job the builder stopped mid-task
   five times, once for 1 hour 50 minutes, and nothing noticed. The session record shows why:
   each time, the model used its whole reply limit (8,192 tokens) thinking and the turn ended

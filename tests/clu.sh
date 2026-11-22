@@ -57,8 +57,12 @@ answer agents/owner/guidance/role.md "$OLD" "$OLD"$'\n   One more line of rule.'
 audit >/dev/null; same "an edit that makes the rulebook longer is rejected" "$(last '.problems | join(";") | test("may not grow")')" "true"
 answer scripts/qa "$OLD" "$OLD" "$J3"
 audit >/dev/null; same "an edit to a file outside the rulebook is rejected" "$(last '.problems | join(";") | test("not a rulebook file")')" "true"
-answer agents/owner/guidance/role.md "$OLD" "$OLD" '["fmn-20261101-0900","fmn-20261103-1400",""]'
-audit >/dev/null; same "a blank job id does not count as a third job" "$(last .status)" "rejected"
+# A blank id that is even in the ledger, on an edit that is otherwise fine: only the blank-id check can reject it.
+cp "$T/proj/.foreman/habits.jsonl" "$T/noblank.jsonl"
+jq -cn '{at:"x", job:"", about:"owner", lesson:"A lesson logged with no job id by mistake, kept here for the test."}' >> "$T/proj/.foreman/habits.jsonl"
+answer agents/owner/guidance/role.md "$OLD" '   the job does not claim). End with a "Not tested" list, or `none`. Vague promises waste a round.' '["fmn-20261101-0900","fmn-20261103-1400",""]'
+audit >/dev/null; same "a blank job id does not count as a third job" "$(last '.status + ": " + (.problems | join(";") | test("blank id") | tostring) + " " + (.problems | length | tostring)')" "rejected: true 1"
+cp "$T/noblank.jsonl" "$T/proj/.foreman/habits.jsonl"
 KEEP="$(jq -r '.must_keep["agents/owner/guidance/role.md"][0]' "$ROOT/rulebook.json")"
 answer agents/owner/guidance/role.md "$KEEP" "Reworded so the line is gone." "$J3"
 audit >/dev/null; same "a change that removes a must-keep line is rejected" "$(last '.status + ": " + (.problems | join(";") | test("must keep") | tostring)')" "rejected: true"
@@ -99,6 +103,14 @@ out="$(audit)"; [ $? -eq 0 ] && [ -s "$T/calls" ] && ok "an ordinary lesson that
 cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"; : > "$T/calls"
 jq -cn '{at:"x", job:"fmn-20261110-0930", about:"owner", lesson:"The owner wrote password=\"TestPassword123456!\" into the brief."}' >> "$T/proj/.foreman/habits.jsonl"
 out="$(audit)"; [ $? -ne 0 ] && [ ! -s "$T/calls" ] && ok "a quoted password inside a lesson is never sent" || bad "a quoted password inside a lesson is never sent" "$out"
+cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"; : > "$T/calls"
+jq -cn --arg l "The owner wrote password='TestPassword123456!' into the brief." '{at:"x", job:"fmn-20261110-0930", about:"owner", lesson:$l}' >> "$T/proj/.foreman/habits.jsonl"
+out="$(audit)"; [ $? -ne 0 ] && [ ! -s "$T/calls" ] && ok "a password in single quotes is never sent either" || bad "a password in single quotes is never sent either" "$out"
+# What is sent is the copy that was scanned: a lesson added to the file after the scan is not in the request.
+cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"; echo '{"habits":[],"checks":[],"proposal":null}' > "$T/answer.json"
+mkdir -p "$T/latebin"; printf '#!/bin/sh\n# the first thing the audit runs after its scan: add a lesson behind its back\nprintf %%s\\\\n \047{"at":"x","job":"j","about":"owner","lesson":"added late LATE-MARKER"}\047 >> "%s"\nexec /usr/bin/wc "$@"\n' "$T/proj/.foreman/habits.jsonl" > "$T/latebin/wc"; chmod +x "$T/latebin/wc"
+PATH="$T/latebin:$T/bin:$PATH" OPENROUTER_API_KEY=sk-test CLU_OUT="$T/out" "$CLU" audit "$T/proj" >/dev/null 2>&1
+grep -q LATE-MARKER "$T/proj/.foreman/habits.jsonl" && ! grep -q LATE-MARKER "$T/body.json" && ok "a lesson added to the ledger after the scan is not in the request" || bad "a lesson added to the ledger after the scan is not in the request" "$(grep -c LATE-MARKER "$T/proj/.foreman/habits.jsonl" "$T/body.json")"
 cp "$T/keep.jsonl" "$T/proj/.foreman/habits.jsonl"
 # two audits in the same second get two records, and a rejected one never shows another's patch
 mkdir -p "$T/fakedate"; printf '#!/bin/sh\ncase "$*" in *%%Y%%m%%d-%%H%%M%%S*) echo 20261120-000000 ;; *) exec /usr/bin/date "$@" ;; esac\n' > "$T/fakedate/date"; chmod +x "$T/fakedate/date"
@@ -110,6 +122,8 @@ out="$(PATH="$T/fakedate:$T/bin:$PATH" OPENROUTER_API_KEY=sk-test CLU_OUT="$T/ou
 [ "$(ls "$T"/out/*.json | wc -l)" = 2 ] && [ "$(ls "$T"/out/*.patch | wc -l)" = 1 ] && [[ "$out" == *"REJECTED"* && "$out" != *"Nothing was changed. To take it"* ]] \
   && ok "two audits in the same second get their own records; a rejected one shows no patch" || bad "two audits in the same second get their own records; a rejected one shows no patch" "$(ls "$T/out"); $out"
 rm -f "$T"/out/*; answer agents/owner/guidance/role.md "not in the file" "x" "$J3"
+# The record's own time stamp is made slow, so every audit has picked its name before any has written.
+printf '#!/bin/sh\ncase "$*" in *%%Y%%m%%d-%%H%%M%%S*) echo 20261120-000000 ;; *%%FT%%TZ*) sleep 1; exec /usr/bin/date "$@" ;; *) exec /usr/bin/date "$@" ;; esac\n' > "$T/fakedate/date"
 for i in 1 2 3 4; do PATH="$T/fakedate:$T/bin:$PATH" OPENROUTER_API_KEY=sk-test CLU_OUT="$T/out" "$CLU" audit "$T/proj" >/dev/null 2>&1 & done; wait
 [ "$(ls "$T"/out/*.json | wc -l)" = 4 ] && [ "$(cat "$T"/out/*.json | jq -s 'length')" = 4 ] && ok "four audits started together in the same second each get their own whole record" || bad "audits started together" "$(ls -la "$T/out")"
 same "an audit never changes a file in the repo" "$(git -C "$ROOT" status --porcelain)" "$before"
