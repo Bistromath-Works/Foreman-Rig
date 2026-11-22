@@ -598,6 +598,8 @@ teardown
 # A pi seat's session record says whether its turn has ended.
 stall_setup
 SS="$OPENRIG_HOME/state/pi/$COD/sessions"; mkdir -p "$SS"
+# An older session that ended its turn, under a name that sorts last: the newest file is the one read.
+printf '%s\n' '{"type":"message","message":{"role":"assistant","stopReason":"stop"}}' > "$SS/z-older.jsonl"; touch -d '2 hours ago' "$SS/z-older.jsonl"
 printf '%s\n' '{"type":"message","message":{"role":"user"}}' '{"type":"message","message":{"role":"assistant","stopReason":"toolUse"}}' > "$SS/a.jsonl"
 export FOREMAN_STALL_IDLE=300
 passes 1; printf '%s\n' "$(( $(date +%s) - 400 ))" > "$SD/$COD.stall"; passes 1
@@ -612,6 +614,20 @@ teardown
 stall_setup
 mkdir -p "$SD"; ( exec 9>"$SD/lock"; flock -n 9; "$F" unstick "$P" --once >"$T/second.out" 2>&1 9>&- )
 grep -q "another watcher is already running" "$T/second.out" && ok "stall: a second watcher for the same crew does nothing while the first holds the lock" || bad "stall lock" "$(cat "$T/second.out")"
+teardown
+
+# State that cannot be trusted or saved must not turn into nudges without end, or stop the watcher.
+stall_setup
+mkdir -p "$SD/stall-items/$COD/qitem-1"            # the count for this task cannot be written
+passes 6
+[ "$(sends "$COD")" = 0 ] && grep -q "cannot be saved" "$SD/log" && ok "stall: a nudge count that cannot be saved means no nudge, not nudges without limit" || bad "stall unsaved count" "$(cat "$T/rig.calls" 2>&1)"
+teardown
+
+stall_setup
+passes 1; printf 'bad\n123' > "$SD/$COD.stall"; printf 'bad\n1 0' > "$SD/$OWN"
+printf '❯%sFrom: x --- ↩ Reply: rig send x\n' "$NB" > "$T/pane.$OWN"; "$F" unstick "$P" --once >/dev/null 2>&1; printf 'bad\n1 0' > "$SD/$OWN"
+"$F" unstick "$P" --once >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && [ "$(cat "$SD/$COD.stall" | wc -l)" = 1 ] && ok "stall: a state record with a stray first line is thrown away, and the watcher carries on" || bad "stall multiline state" "rc=$rc $(cat "$SD/$COD.stall")"
 teardown
 
 stall_setup
@@ -773,8 +789,22 @@ while IFS='|' read -r want cmd; do gcheck "$want" "$cmd" || { allok=0; bad "guar
 0|bash -c 'printf "%s\n" "A & B"'
 0|bash -c "printf '%s' 'A & B'"
 2|bash -c "pnpm dev & echo started"
+2|bash -c "printf '%s' \"It's done\"; sleep 1 & echo \"We're ready\""
+2|git -C My\ App push
+2|git --config-env=core.editor=EDITOR push
+2|git --config-env core.editor=EDITOR push origin main
+2|sudo bash -c 'pnpm dev &'
+2|echo $(git push)
+0|pnpm install --frozen-lockfile "--offline">install.log
+0|pnpm build |& tee build.log
+0|pnpm build &> build.log
+0|echo "It's fine & dandy" 'and "so" is this & that'
+0|git -C My\ App status
+0|grep -c "a;b" notes.txt
 CASES
-[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (50 cases)"
+[ "$allok" -eq 1 ] && ok "the guard blocks the banned commands and lets look-alikes through (62 cases)"
+gcheck 0 "$(printf '%s\n' 'pnpm install --frozen-lockfile --off\' 'line')" && ok "a word continued across a backslash line end is one word, as in the shell" || bad "word continuation"
+gcheck 2 "$(printf '%s\n' 'cat <<EOF' 'EOF' 'cat <<EOF &' 'text' 'EOF')" && ok "an empty here-document does not hide a background & after it" || bad "empty here-document"
 gcheck 2 "$(printf '%s\n' 'pnpm install --frozen-lockfile --offline' 'pnpm install')" && ok "the 'without' words of one line do not cover a command on the next line" || bad "unless across lines"
 gcheck 0 "$(printf '%s\n' 'pnpm install \' '  --frozen-lockfile --offline')" && ok "a command continued with a backslash is still one command" || bad "line continuation"
 gcheck 2 "$(printf '%s\n' 'cat <<EOF &' 'some text' 'EOF')" && ok "a background & on the line that opens a here-document is still refused" || bad "background on here-document line"
@@ -839,6 +869,10 @@ rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "4. number
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'numbered 1, 2, 3' && ok "rules that skip a number are refused" || bad "rule numbering" "$out"
 rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "$(printf '3. a\n4. b')" "Rule 3: /** like this */"
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 4 needs its own example' && ok "each check-by-eye rule needs its own example, not one for all" || bad "example per rule" "$out"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "Rule 3:"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 3 needs its own example' && ok "a bare 'Rule 3:' label with nothing after it is not an example" || bad "bare label" "$out"
+rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "$(printf '3. a\n4. b')" "$(printf 'Rule 3:\nRule 4:\n/** like this */')"
+out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -ne 0 ] && echo "$out" | grep -q 'rule 3 needs its own example' && ! echo "$out" | grep -q 'rule 4 needs' && ok "an example on the lines under its label counts; a label followed straight by the next label does not" || bad "label then label" "$out"
 rm -f "$TF"; "$F" task "$P" fmn-20261121-0900 1 >/dev/null; fill_task "3. screenFiles has a block doc comment." "Rule 3: /** Sorts picked files. */"
 out="$("$F" task-check "$P" fmn-20261121-0900 1 2>&1)"; [ $? -eq 0 ] && [ "$(jq -c '[.rules,.by_eye,.proved,.eye,.files]' "$J/ctx/code-1.check.json")" = '[3,1,[1,2],[3],["src/batch.ts"]]' ] \
   && ok "a filled task file is ready, and its rules are recorded" || bad "task ready" "$out"
@@ -959,8 +993,12 @@ done <<'CASES'
 2|rig queue create --summary crew-owner@foreman-my-app
 0|rig queue create --destination=crew-owner@foreman-my-app --body-file job.md
 0|rig send "crew-owner@foreman-my-app" "the checker said no"
+0|rig queue create --destination crew-owner@foreman-my-app --summary 'Review --destination before launch'
+0|rig queue create --destination="crew-owner@foreman-my-app" --body-file job.md
+2|rig queue create --destination="crew-coder@foreman-my-app" --body-file job.md
+2|rig send 'crew-checker@foreman-my-app' "tell crew-owner@foreman-my-app"
 CASES
-[ "$allok" -eq 1 ] && ok "the front guard lets a message to the lead through and refuses every other seat and the QA rig (24 cases); it reads who a message goes to, not who it mentions"
+[ "$allok" -eq 1 ] && ok "the front guard lets a message to the lead through and refuses every other seat and the QA rig (28 cases); it reads who a message goes to, not who it mentions"
 out2="$(PATH="$JQP" "$F" front "$P" 2>&1)"
 [ "$(jq '[.hooks.PreToolUse[].hooks[].command | select(test("foreman-guard"))] | length' "$S")" = 1 ] && [ "$(jq '.permissions.deny | length' "$S")" = 1 ] && [ "$(jq -c '.enabledPlugins' "$S")" = '{"mine@me":true,"rpi@hl":true}' ] \
   && ok "running front twice adds nothing twice and keeps the plugins" || bad "front idempotent" "$(cat "$S")"

@@ -372,8 +372,8 @@ unstick_pass() {
     printf '%s' "$pane" > "$f.new"
     _h="$(cat "$f" 2>/dev/null)" || _h=""
     since="${_h% *}"; tries="${_h#* }"
-    if ! cmp -s "$f.new" "$f.pane" || ! printf '%s\n' "$_h" | grep -Eqx '[0-9]{1,12} [0-9]{1,2}' \
-      || [ "$(wc -l < "$f" 2>/dev/null || echo 0)" -ne 1 ]; then
+    if ! cmp -s "$f.new" "$f.pane" || ! [[ "$_h" =~ ^[0-9]{1,12}\ [0-9]{1,2}$ ]] \
+      || [ "$(wc -l < "$f" 2>/dev/null || echo 0)" -ne 1 ]; then   # the whole value, not one line of it
       mv "$f.new" "$f.pane"; printf '%s 0\n' "$now" > "$f"; continue
     fi
     rm -f "$f.new"
@@ -436,8 +436,8 @@ stall_pass() {
     # changed pane, or a record that is not one plain number, starts the idle timer over.
     printf '%s' "$pane" > "$f.new"
     _h="$(cat "$f" 2>/dev/null)" || _h=""
-    if ! cmp -s "$f.new" "$f.pane" || ! printf '%s\n' "$_h" | grep -Eqx '[0-9]{1,12}' \
-      || [ "$(wc -l < "$f" 2>/dev/null || echo 0)" -ne 1 ]; then
+    if ! cmp -s "$f.new" "$f.pane" || ! [[ "$_h" =~ ^[0-9]{1,12}$ ]] \
+      || [ "$(wc -l < "$f" 2>/dev/null || echo 0)" -ne 1 ]; then   # the whole value, not one line of it
       mv "$f.new" "$f.pane"; printf '%s\n' "$now" > "$f"; continue
     fi
     rm -f "$f.new"
@@ -452,22 +452,27 @@ stall_pass() {
     # The count for this task: "nudges told".
     c="$(unstick_dir)/stall-items/$seat/$item"; mkdir -p "${c%/*}"
     _h="$(cat "$c" 2>/dev/null)" || _h=""
-    printf '%s\n' "$_h" | grep -Eqx '[0-9] [01]' || _h="0 0"
+    [[ "$_h" =~ ^[0-9]\ [01]$ ]] || _h="0 0"
     read -r nudges told <<<"$_h"
+    # The count is written before anything is sent. If it cannot be written, nothing is sent:
+    # a count that does not stick would let the nudges go on without limit.
     if [ "$nudges" -lt "$STALL_NUDGES" ]; then
+      { printf '%s %s\n' "$((nudges + 1))" "$told" > "$c"; } 2>/dev/null \
+        || { unstick_log "$seat: idle on $item, but its nudge count cannot be saved ($c); not nudging"; continue; }
       rig send "$seat" "From the Foreman watcher: you stopped with your claimed task unfinished (queue item $item). Carry on with it now. Open the task file it names if you need to, finish the code, run the command, write the result file, and hand back to crew-owner. If you cannot finish, write the result with status: stuck and the reason, and hand back anyway." >/dev/null 2>&1 \
-        || { unstick_log "$seat: idle on $item, but the nudge could not be sent"; continue; }
+        || { printf '%s %s\n' "$nudges" "$told" > "$c"; unstick_log "$seat: idle on $item, but the nudge could not be sent"; continue; }
       nudges=$((nudges + 1))
       stall_record "$seat" "$item" "{at:\$at, seat:\$seat, item:\$item, nudge:$nudges}"
       unstick_log "$seat: nudged, idle on claimed task $item (pane unchanged ${idle}s, nudge $nudges of $STALL_NUDGES)"
     elif [ "$told" = 0 ]; then
+      { printf '%s 1\n' "$nudges" > "$c"; } 2>/dev/null \
+        || { unstick_log "$seat: still idle on $item, but its record cannot be saved ($c); not telling the owner again and again"; continue; }
       rig send "$owner" "From the Foreman watcher: the builder ($seat) is still idle on its claimed task (queue item $item) after $STALL_NUDGES nudges. Do not wait for it. Look at what it left in the checkout, then build the piece yourself or hand it over again as a smaller task. Note the time lost in LOG.md and the reason in DECISIONS.md." >/dev/null 2>&1 \
-        || { unstick_log "$seat: still idle on $item after $STALL_NUDGES nudges, but the owner could not be told; will try again"; continue; }
+        || { printf '%s 0\n' "$nudges" > "$c"; unstick_log "$seat: still idle on $item after $STALL_NUDGES nudges, but the owner could not be told; will try again"; continue; }
       told=1
       stall_record "$seat" "$item" '{at:$at, seat:$seat, item:$item, told_owner:true}'
       unstick_log "$seat: still idle on $item after $STALL_NUDGES nudges; told the owner"
     fi
-    printf '%s %s\n' "$nudges" "$told" > "$c"
   done < <(members)
 }
 
@@ -482,6 +487,8 @@ cmd_unstick() {
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$(unstick_dir)/lock"
     flock -n 9 || { say "another watcher is already running for $RIG_NAME; this one did nothing"; return 0; }
+  else
+    say "note: flock not found, so nothing stops a second watcher for $RIG_NAME. Run only one."
   fi
   if [ "$once" = 1 ]; then unstick_pass; stall_pass; return 0; fi
   say "Watching $RIG_NAME for unsent OpenRig messages and a stalled builder (every ${UNSTICK_EVERY}s). Ctrl-C to stop."
@@ -908,6 +915,10 @@ cmd_task_check() {
   resolve "${1:-}"; job_dir "${2:-}"; task_paths "${3:-}"
   [ -f "$TASK" ] || die "no task file $TASK; create it with: scripts/foreman task \"$PROJECT\" $JOB $3"
   local problems=() warns=() files proved eye nums n want=1 ex cmd w
+  # One copy is read for every check and for the digest, so the stored facts and the digest
+  # describe the same text even if the file is edited meanwhile.
+  tsnap="$(mktemp)"; trap 'rm -f "$tsnap"' EXIT   # not local: the trap runs after the function returns
+  cp "$TASK" "$tsnap"; TASK="$tsnap"
   ! grep -q 'FILL-ME' "$TASK" || problems+=("$(grep -c 'FILL-ME' "$TASK") FILL-ME left in the file")
   [ -n "$(section "$TASK" Goal | tr -d '[:space:]')" ] || problems+=("the Goal is empty")
   files="$(section "$TASK" "Files you may change" | grep -o '`[^`]*`' | tr -d '`' | sort -u || true)"
@@ -922,7 +933,12 @@ cmd_task_check() {
   if [ "$n" -gt 0 ]; then
     ex="$(section "$TASK" Examples)"
     for w in $(printf '%s\n' "$eye" | cut -f1 | grep . || true); do
-      printf '%s\n' "$ex" | grep -Eiq "(^|[^A-Za-z0-9])rule $w([^0-9]|\$)" \
+      printf '%s\n' "$ex" | awk -v n="$w" '
+          { l = tolower($0) }
+          match(l, "^[^a-z0-9]*rule[ \t]+" n "[^0-9a-z]") { on = 1; rest = substr($0, RSTART + RLENGTH); if (rest ~ /[^[:space:]:*_`-]/) found = 1; next }
+          l ~ /^[^a-z0-9]*rule[ \t]+[0-9]+[^0-9a-z]/ { on = 0; next }
+          on && /[^[:space:]]/ { found = 1 }
+          END { exit !found }' \
         || problems+=("check-by-eye rule $w needs its own example under Examples, starting \"Rule $w:\" (the exact form wanted)")
     done
   fi

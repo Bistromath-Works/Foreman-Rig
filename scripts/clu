@@ -28,7 +28,7 @@ MIN_JOBS=3
 # Shapes of things that must never be sent out: common key prefixes, long hex or base64 runs,
 # private key blocks, and "password=" style pairs whose value is one unbroken run of 16 or more
 # key-like characters (so "the token: subsequent requests..." in a lesson is not a hit).
-SECRET_RE='(sk-[A-Za-z0-9_-]{16,}|[sr]k_(live|test)_[A-Za-z0-9]{8,}|pk_(live|test)_[A-Za-z0-9]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|[A-Fa-f0-9]{40,}|[A-Za-z0-9+/]{48,}={0,2}|(password|passwd|secret|api[_-]?key|token)[[:space:]]*[:=][[:space:]]*["\x27]?[A-Za-z0-9_+/.=-]{16,})'
+SECRET_RE='(sk-[A-Za-z0-9_-]{16,}|[sr]k_(live|test)_[A-Za-z0-9]{8,}|pk_(live|test)_[A-Za-z0-9]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|[A-Fa-f0-9]{40,}|[A-Za-z0-9+/]{48,}={0,2}|(password|passwd|secret|api[_-]?key|token)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_+/.=-]{16,})'
 
 die() { printf 'clu: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -64,7 +64,10 @@ cmd_audit() {
   [ -n "$project" ] && [ -d "$project" ] || usage
   ledger="$project/.foreman/habits.jsonl"
   [ -s "$ledger" ] || die "no lessons yet in $ledger"
-  jq -e . "$ledger" >/dev/null 2>&1 || die "$ledger has a line that is not JSON"
+  # One copy is taken and everything below reads that copy: what is scanned is what is sent.
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT   # not local: the trap runs after the function returns
+  cp "$ledger" "$tmp/ledger.jsonl"; ledger="$tmp/ledger.jsonl"
+  jq -e . "$ledger" >/dev/null 2>&1 || die "$project/.foreman/habits.jsonl has a line that is not JSON"
   # Scanned twice: as written, and with every text field decoded (in the file a quote inside a
   # lesson is written \", which would hide password="..." from the pattern).
   local hit
@@ -73,7 +76,6 @@ cmd_audit() {
   [ -n "${OPENROUTER_API_KEY:-}" ] || die "OPENROUTER_API_KEY is not set"
   cmd_rulebook >/dev/null
 
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT   # not local: the trap runs after the function returns
   local jobs; jobs="$(jq -r .job "$ledger" | sort -u | wc -l | tr -d ' ')"
   { while IFS= read -r f; do printf '\n===== FILE: %s =====\n' "$f"; cat "$ROOT/$f"; done < <(files); } >"$tmp/rulebook.txt"
   jq -c '{job, about, lesson}' "$ledger" >"$tmp/lessons.jsonl"
