@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The front seat closes issues (CF-35).** The rigs have no tracker access and a job ends with
+  a local merge the tracker never sees, so finished issues stayed open. The front seat now
+  checks the lead's files at the start of a session, and marks an issue done, with the commit,
+  when they show the job merged. No merge shown, or something waiting on the human: it stays open.
 - **Second review of the unpushed work (CF-22).** 20 findings, none high. Fixed, each with a test:
   - *Guard.* A git ban now sees through a quoted folder (`git -C "My App" push`). A new line ends
     a command, so the "without" words of one line no longer cover the next. Quoted words and a

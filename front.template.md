@@ -38,5 +38,9 @@ way: tell the human.
 ## Hearing back
 
 The lead records what shipped and what waits on the human in `{{PROJECT}}/.foreman/STATE.md`,
-and each job's history in `{{PROJECT}}/.foreman/jobs/<job id>/LOG.md`. Read those when the human
-asks how a job went, and write the outcome to the issue.
+and each job's history in `{{PROJECT}}/.foreman/jobs/<job id>/LOG.md`. Read those at the start
+of a session and when the human asks how a job went, and write the outcome to the issue.
+
+When those files show a job merged, mark its issue done and note the commit. The files decide,
+not a message: no merge shown there, or something in the job still waiting on the human, and
+the issue stays open.
