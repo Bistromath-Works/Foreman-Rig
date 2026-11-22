@@ -924,6 +924,8 @@ S="$D/.claude/settings.json"; B="$D/.foreman-front/bans.json"; G="$T/foreman/scr
   && ok "front turns the named plugin on and keeps the folder's own settings" || bad "front plugins" "$(cat "$S")"
 grep -q 'rig send crew-owner@foreman-my-app "New job' "$D/CLAUDE.md" && grep -qF "$P/.foreman/inbox/" "$D/CLAUDE.md" && ! grep -q '{{' "$D/CLAUDE.md" && [ -d "$P/.foreman/inbox" ] \
   && ok "the front seat's instructions name this project's lead and inbox" || bad "front CLAUDE.md" "$(cat "$D/CLAUDE.md" 2>&1)"
+grep -q 'mark its issue done and note the commit' "$D/CLAUDE.md" && grep -q 'the issue stays open' "$D/CLAUDE.md" \
+  && ok "the front seat closes an issue only when the lead's files show the merge" || bad "front closing rule" "$(cat "$D/CLAUDE.md" 2>&1)"
 hookcmd="$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("foreman-guard"))][0]' "$S")"
 printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rig send qa-gatekeeper@foreman-qa hi"}}' | PATH="$JQP" bash -c "$hookcmd" 2>/dev/null; [ $? -eq 2 ] \
   && ok "the installed front hook refuses a message to the QA rig" || bad "front hook"
