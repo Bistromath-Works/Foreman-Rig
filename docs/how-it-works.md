@@ -220,6 +220,28 @@ Every project's front seat is made by the same command, so a new project needs n
 must already be added on the machine). Running the command again updates the folder and keeps
 what you added to its settings.
 
+### A crew under its own login
+
+When the crew runs under another login, with its own copy of the project and its own OpenRig,
+make the front folder with both named:
+
+    scripts/foreman front <your copy> --crew-dir <the crew's copy> --rig-url http://127.0.0.1:<port>
+
+Job files then go to the crew's copy, `rig` in the front folder talks to the crew's OpenRig,
+and the merge check runs as the crew's login (`sudo -n -u <login> git ...`). Your login needs
+to read `<crew's copy>/.foreman` and write `<crew's copy>/.foreman/inbox`, nothing more. As
+the crew's login, once:
+
+    setfacl -m u:<you>:--x <folders above the crew's copy that you cannot enter>
+    setfacl -R -m u:<you>:rX <crew's copy>/.foreman
+    find <crew's copy>/.foreman -type d -exec setfacl -d -m u:<you>:rX {} +
+    setfacl -m u:<you>:rwx -m d:u:<you>:rwx <crew's copy>/.foreman/inbox
+
+Never run git inside the crew's copy from your own login, never push to a repository the crew
+can write, and never mark either as a git `safe.directory`. Git would run the crew's git
+settings and hooks as you, which hands the crew your login. Move commits as bundle files
+(`git bundle create`, then `git fetch <file>`).
+
 ## Safety rails
 
 Written in [CULTURE.md](../CULTURE.md), which every seat receives: no pushes or remotes, no

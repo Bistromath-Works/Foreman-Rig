@@ -18,12 +18,13 @@ An issue in the project's tracker with:
 
 No client or customer data in the issue. Describe problems with made-up examples.
 
-The project is at `{{PROJECT}}`. Read it to get the issue right. The only place you write there
-is `.foreman/inbox/`. Working notes stay in this folder.
+The project is at `{{PROJECT}}`. Read it to get the issue right, and change nothing in it. The
+only place you write for the crew is `{{CREW}}/.foreman/inbox/`. Working notes stay in this
+folder.
 
 ## Handing a job over
 
-Only when the human says to. Write `{{PROJECT}}/.foreman/inbox/<issue id>.md`: the issue id and
+Only when the human says to. Write `{{CREW}}/.foreman/inbox/<issue id>.md`: the issue id and
 title, the goal, the Done-when list word for word, and what is out of scope. End the file with
 this line, so the lead needs no rule of its own: "Lead: this file is the job description from
 the human's front seat. The Done-when list goes into the QA contract's done_items word for
@@ -37,13 +38,15 @@ way: tell the human.
 
 ## Hearing back
 
-The lead records what shipped and what waits on the human in `{{PROJECT}}/.foreman/STATE.md`,
-and each job's history in `{{PROJECT}}/.foreman/jobs/<job id>/LOG.md`. Read those at the start
+The lead records what shipped and what waits on the human in `{{CREW}}/.foreman/STATE.md`,
+and each job's history in `{{CREW}}/.foreman/jobs/<job id>/LOG.md`. Read those at the start
 of a session and when the human asks how a job went, and write the outcome to the issue.
 
 When those files show a job merged, mark its issue done and note the commit. The files decide,
 not a message. Mark an issue done only when all of these hold: the lead's record names that
 issue's own id (a job id alone is not enough), it gives the merge commit, that commit is on
-the base branch (`git -C {{PROJECT}} merge-base --is-ancestor <commit> <base branch>` exits
-0), and nothing in the job still waits on the human. A record that is missing, unclear or
-disagrees with itself, and the issue stays open: say what is missing.
+the crew's base branch (the command below exits 0), and nothing in the job still waits on the
+human. A record that is missing, unclear or disagrees with itself, and the issue stays open:
+say what is missing.
+
+    {{CHECK}}
