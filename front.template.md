@@ -34,6 +34,10 @@ word." Then, exactly:
 
 {{DOWN}}
 
+The lead is already running; you never launch it or open its terminal. `rig send` is the only
+way you reach it, and its files are the only way you hear back. A terminal attach cannot work
+from this session. When the human wants to watch the lead, they attach from their own terminal.
+
 The lead is the only seat you talk to. This folder's settings refuse a message to any other
 seat, and anything that touches the QA rig. If a command is refused, do not look for another
 way: tell the human.

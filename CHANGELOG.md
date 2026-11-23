@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **The front seat is told not to attach to the lead (CF-19).** A front seat session tried to
+  open the lead's terminal, which cannot work from there. The instructions now say the lead is
+  already running and `rig send` is the only way to reach it.
 - **The front seat can start a crew that is down (CF-19).** `scripts/foreman front ...
   --crew-start "<command>"` names one command, run as the crew's login, that starts the crew.
   The front seat is told to use it when `rig ps` shows no lead, and the guard lets that exact
