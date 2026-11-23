@@ -120,10 +120,13 @@ def bg: . as $s
 # Is the ban lifted for one command? Plain "unless" words must all be among its words. With
 # arg "first", the first word after the banned text that is not an option must be one of them
 # (who a message goes to, not who it mentions). With arg "--flag", the flag must be there and
-# each value given to it must be one of them.
+# each value given to it must be one of them. A ban's "allow" list holds whole commands that
+# are let through word for word, whatever "unless" says.
 def lifted($ban):
   ($ban.unless // []) as $u
-  | if $ban.arg == "first" then ([.after[] | select(startswith("-") | not)] | first // "") as $a | ($u | index($a)) != null
+  | (.w | join(" ")) as $whole
+  | if (($ban.allow // []) | index($whole)) != null then true
+    elif $ban.arg == "first" then ([.after[] | select(startswith("-") | not)] | first // "") as $a | ($u | index($a)) != null
     elif ($ban.arg // "" | startswith("--")) then
       ([.after as $a | range(0; $a | length) | $a[.] as $x
         | if $x == $ban.arg then ($a[. + 1] // "") elif ($x | startswith($ban.arg + "=")) then $x[($ban.arg | length) + 1:] else empty end]) as $v
@@ -132,7 +135,7 @@ def lifted($ban):
 first(
   ($b[0].bans[] | . as $ban
     | select(($ban.anywhere == true and ($raw | contains($ban.text))) or has($raw; $ban.text) or has($plain; $ban.text))
-    | select(($ban.unless // []) | length == 0 or any(pieces($ban.text)[]; lifted($ban) | not))
+    | select((($ban.unless // []) + ($ban.allow // [])) | length == 0 or any(pieces($ban.text)[]; lifted($ban) | not))
     | "`\(.text)`\(if (.unless // []) | length > 0 then " without " + (.unless | join(" ")) else "" end) is banned (\(.source))"),
   (select($b[0].background != false)
     | select($bg == "true" or ($lean | bg))

@@ -32,6 +32,8 @@ word." Then, exactly:
 
     rig send {{LEAD}} "New job <issue id>: read .foreman/inbox/<issue id>.md"
 
+{{DOWN}}
+
 The lead is the only seat you talk to. This folder's settings refuse a message to any other
 seat, and anything that touches the QA rig. If a command is refused, do not look for another
 way: tell the human.

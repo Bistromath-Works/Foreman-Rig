@@ -1061,13 +1061,17 @@ out3="$(QA_HOME="$T/crewhome/.foreman-qa" PATH="$T/shim:$JQP" "$F" front "$P" --
   && grep -qF "Write \`$C/.foreman/inbox/<issue id>.md\`" "$D/CLAUDE.md" && grep -qF "$C/.foreman/STATE.md" "$D/CLAUDE.md" \
   && grep -qF "sudo -n -u crewlogin git -C $C merge-base --is-ancestor" "$D/CLAUDE.md" && ! grep -qF "git -C $P merge-base" "$D/CLAUDE.md" \
   && ok "front for a crew under another login: job files go to the crew's copy, rig talks to the crew's OpenRig, and git in the crew's copy runs as the crew's login" || bad "front --crew-dir" "$out3 $(cat "$S" 2>&1)"
+ST="sudo -n -u crewlogin /opt/crew/start.sh start"
+out3="$(QA_HOME="$T/crewhome/.foreman-qa" PATH="$T/shim:$JQP" "$F" front "$P" --crew-dir "$C" --rig-url http://127.0.0.1:7434 --crew-start "$ST" 2>&1)"
+grep -qF "    $ST" "$D/CLAUDE.md" && gcheck 0 "$ST" && gcheck 2 "$ST --force" && gcheck 2 "sudo -n -u crewlogin /opt/crew/start.sh stop" && gcheck 2 "$ST; sudo -u crewlogin bash" \
+  && ok "with --crew-start the front seat may run that exact command to start the crew, and no variation of it" || bad "front --crew-start" "$out3 $(cat "$B")"
 gcheck 0 "sudo -n -u crewlogin git -C $C merge-base --is-ancestor abc123 main" && gcheck 2 "sudo -n -u crewlogin cat $C/secret" && gcheck 2 "sudo -u crewlogin bash" \
   && ok "with a crew under another login the front guard lets sudo through for the merge check only" || bad "front sudo ban"
 out3="$(PATH="$JQP" "$F" front "$P" --crew-dir "$C" 2>&1)"; [ $? -ne 0 ] && grep -q -- "--rig-url" <<<"$out3" && ok "front refuses --crew-dir without --rig-url" || bad "front --crew-dir alone" "$out3"
 out3="$(PATH="$JQP" "$F" front "$P" --crew-dir "$C" --rig-url http://127.0.0.1:7434 2>&1)"; [ $? -ne 0 ] && grep -q "belongs to this login" <<<"$out3" && ok "front refuses a crew folder that belongs to the same login" || bad "front same login" "$out3"
 out3="$(PATH="$JQP" "$F" front "$P" --crew-dir "$T/nowhere" --rig-url http://127.0.0.1:7434 2>&1)"; [ $? -ne 0 ] && grep -q "must be able to read" <<<"$out3" && ok "front refuses a crew folder it cannot write job files to" || bad "front unreadable crew" "$out3"
 PATH="$JQP" "$F" front "$P" >/dev/null 2>&1; [ "$(jq -r '.env.OPENRIG_URL // "none"' "$S")" = none ] && grep -qF "git -C $P merge-base --is-ancestor" "$D/CLAUDE.md" \
-  && ok "front without --crew-dir goes back to one login" || bad "front back to one login" "$(cat "$S")"
+  && grep -q "do not try to start it" "$D/CLAUDE.md" && ok "front without --crew-dir goes back to one login" || bad "front back to one login" "$(cat "$S")"
 teardown
 
 # Static: every agent ref, role file and skill named in the repo exists.

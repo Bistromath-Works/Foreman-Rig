@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The front seat can start a crew that is down (CF-19).** `scripts/foreman front ...
+  --crew-start "<command>"` names one command, run as the crew's login, that starts the crew.
+  The front seat is told to use it when `rig ps` shows no lead, and the guard lets that exact
+  command through and no other `sudo`. A ban can now carry an `allow` list of whole commands.
 - **Front seat for a crew under another login (CF-19).** `scripts/foreman front <project>
   --crew-dir <dir> --rig-url <url>`: job files go to the crew's own copy of the project, `rig`
   in the front folder talks to the crew's own OpenRig, and the merge check runs as the crew's
