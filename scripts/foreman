@@ -8,7 +8,8 @@
 #   scripts/foreman unstick <project> [--once]   press Enter on unsent OpenRig messages; nudge a stalled builder (up starts it)
 #   scripts/foreman tracing <project> [--off]    send every seat's traces to Langfuse (keys from env)
 #   scripts/foreman bans    <project> [--off]    make every seat's runtime refuse the banned commands (up does this)
-#   scripts/foreman front   <project> [--plugin <id>]   set up the human's front seat: a folder whose agent can reach the lead only
+#   scripts/foreman front   <project> [--plugin <id>] [--crew-dir <dir> --rig-url <url>]
+#                           set up the human's front seat: a folder whose agent can reach the lead only
 #   scripts/foreman task    <project> <job-id> <n>          write the skeleton of builder task <n> for the owner to fill in
 #   scripts/foreman task-check   <project> <job-id> <n>     refuse a task file that is not ready to hand over
 #   scripts/foreman result-check <project> <job-id> <n>     check the builder's result against the task and the checkout
@@ -790,15 +791,21 @@ cmd_bans() {
 #     and any command that names the QA rig, its home folder or its command
 #   - a deny rule refuses reading the QA rig's home folder
 # One folder per project, all made the same way, so a new project needs only this command.
+#
+# When the crew runs under another login (its own copy of the project, its own OpenRig), name
+# both: --crew-dir <the crew's copy> --rig-url <the crew's OpenRig, e.g. http://127.0.0.1:7434>.
+# Job files then go to the crew's copy and `rig` in the folder talks to the crew's OpenRig.
+# The front seat never runs git in the crew's copy: git would run the crew's own git settings
+# as the human. It asks the crew's login instead (sudo -n -u <login> git ...).
 FRONT_TEMPLATE="$ROOT/front.template.md"
 
 cmd_front() {
-  local arg project="" plugins=() want="" dir lead qa_home qa_rig list hook text k
+  local arg project="" plugins=() want="" dir lead qa_home qa_rig list hook text k crew="" url="" login="" check
   for arg in "$@"; do
-    if [ -n "$want" ]; then plugins+=("$arg"); want=""; continue; fi
-    case "$arg" in --plugin) want=1 ;; -*) die "unknown option: $arg" ;; *) [ -z "$project" ] || die "front takes one project path"; project="$arg" ;; esac
+    case "$want" in plugin) plugins+=("$arg"); want=""; continue ;; crew) crew="$arg"; want=""; continue ;; url) url="$arg"; want=""; continue ;; esac
+    case "$arg" in --plugin) want=plugin ;; --crew-dir) want=crew ;; --rig-url) want=url ;; -*) die "unknown option: $arg" ;; *) [ -z "$project" ] || die "front takes one project path"; project="$arg" ;; esac
   done
-  [ -z "$want" ] || die "--plugin needs a plugin id, e.g. --plugin name@marketplace"
+  [ -z "$want" ] || die "--plugin needs a plugin id (e.g. name@marketplace), --crew-dir a folder, --rig-url a URL"
   resolve "$project"; require_rig_file
   command -v node >/dev/null 2>&1 || die "node is needed to edit the JSON settings files (OpenRig needs it too)"
   command -v jq >/dev/null 2>&1 || die "jq is needed for the command guard"
@@ -806,29 +813,48 @@ cmd_front() {
   dir="${FOREMAN_FRONT_HOME:-$HOME/front}/$SLUG"
   lead="crew-owner@$RIG_NAME"
   qa_home="${QA_HOME:-$HOME/.foreman-qa}"; qa_rig="${QA_RIG:-foreman-qa}"
+  check="git -C $PROJECT merge-base --is-ancestor <commit> <base branch>"
+  if [ -n "$crew" ]; then
+    [ -n "$url" ] || die "--crew-dir needs --rig-url too: the crew's own OpenRig, e.g. http://127.0.0.1:7434"
+    [ -w "$crew/.foreman/inbox" ] && [ -r "$crew/.foreman" ] || die "this login must be able to read $crew/.foreman and write $crew/.foreman/inbox; see docs/how-it-works.md, 'A crew under its own login'"
+    crew="$(cd "$crew" && pwd -P)"; login="$(stat -c %U "$crew")"
+    [ "$login" != "$(id -un)" ] || die "$crew belongs to this login; --crew-dir is for a crew under another login"
+    [ -n "${QA_HOME:-}" ] || { qa_home="$(getent passwd "$login" | cut -d: -f6 || true)"; [ -n "$qa_home" ] || die "cannot find the home folder of the login '$login'; set QA_HOME"; qa_home="$qa_home/.foreman-qa"; }
+    check="sudo -n -u $login git -C $crew merge-base --is-ancestor <commit> <base branch>"
+  else
+    [ -z "$url" ] || die "--rig-url goes with --crew-dir"
+    crew="$PROJECT"; mkdir -p "$PROJECT/.foreman/inbox"
+  fi
   list="$dir/.foreman-front/bans.json"
-  mkdir -p "$dir/.claude" "$dir/.foreman-front" "$PROJECT/.foreman/inbox"
-  jq -n --arg dir "$dir" --arg lead "$lead" --args '
+  mkdir -p "$dir/.claude" "$dir/.foreman-front"
+  jq -n --arg dir "$dir" --arg lead "$lead" --arg login "$login" --args '
     {project: $dir, background: false,
      bans: ([{text: "rig send", arg: "first"}, {text: "rig queue", arg: "--destination"} | . + {unless: [$lead], source: "front seat: the lead is the only seat it may message"}]
-          + [$ARGS.positional[] | {text: ., anywhere: true, source: "front seat: the QA rig is out of reach"}])}' \
+          + [$ARGS.positional[] | {text: ., anywhere: true, source: "front seat: the QA rig is out of reach"}]
+          + (if $login == "" then [] else [{text: "sudo", unless: ["merge-base"], source: "front seat: the crew login is only for the merge check"}] end))}' \
     "$qa_rig" "$qa_home" "$ROOT/scripts/qa" >"$list.tmp" && mv "$list.tmp" "$list"
   hook="$(printf '%q %q' "$ROOT/scripts/foreman-guard" "$list")"
   FILE="$dir/.claude/settings.json" HOOK="$hook" OFF=0 MATCH="Bash" json_edit "$BAN_EDIT"
-  FILE="$dir/.claude/settings.json" QA="$qa_home" PROJ="$PROJECT" PLUGINS="$(printf '%s\n' "${plugins[@]}")" json_edit '
+  FILE="$dir/.claude/settings.json" QA="$qa_home" PROJ="$PROJECT" CREW="$crew" URL="$url" PLUGINS="$(printf '%s\n' "${plugins[@]}")" json_edit '
     const add = (a, v) => (a.includes(v) ? a : a.concat([v]));
     j.permissions = j.permissions || {};
     j.permissions.deny = add(j.permissions.deny || [], "Read(/" + env.QA + "/**)");
     j.permissions.additionalDirectories = add(j.permissions.additionalDirectories || [], env.PROJ);
+    if (env.CREW !== env.PROJ) j.permissions.additionalDirectories = add(j.permissions.additionalDirectories, env.CREW + "/.foreman");
+    // With a crew under another login, rig in this folder talks to that login OpenRig.
+    j.env = j.env || {};
+    if (env.URL) j.env.OPENRIG_URL = env.URL; else delete j.env.OPENRIG_URL;
+    if (!Object.keys(j.env).length) delete j.env;
     for (const p of env.PLUGINS.split("\n").filter(Boolean)) (j.enabledPlugins = j.enabledPlugins || {})[p] = true;
     return j;'
   text="$(cat "$FRONT_TEMPLATE")"
-  for k in "LEAD=$lead" "PROJECT=$PROJECT" "NAME=$SLUG"; do text="${text//"{{${k%%=*}}}"/"${k#*=}"}"; done
+  for k in "LEAD=$lead" "PROJECT=$PROJECT" "NAME=$SLUG" "CREW=$crew" "CHECK=$check"; do text="${text//"{{${k%%=*}}}"/"${k#*=}"}"; done
   printf '%s\n' "$text" >"$dir/CLAUDE.md"
   say "front seat for $RIG_NAME: $dir"
   say "  may message:  $lead (and no other seat)"
   say "  out of reach: the QA rig ($qa_rig), $qa_home, $ROOT/scripts/qa"
-  say "  hands jobs over as files in $PROJECT/.foreman/inbox/"
+  say "  hands jobs over as files in $crew/.foreman/inbox/"
+  [ -z "$url" ] || say "  crew under the login '$login'; rig in this folder talks to $url"
   [ "${#plugins[@]}" -eq 0 ] || say "  plugins on in this folder: ${plugins[*]}"
   say ""
   say "Open that folder as a project in the app you run Claude Code in. This covers Claude Code only."

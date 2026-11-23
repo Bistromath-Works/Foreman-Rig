@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Front seat for a crew under another login (CF-19).** `scripts/foreman front <project>
+  --crew-dir <dir> --rig-url <url>`: job files go to the crew's own copy of the project, `rig`
+  in the front folder talks to the crew's own OpenRig, and the merge check runs as the crew's
+  login. The human's login never runs git inside a folder the crew can write: git would run
+  the crew's git settings and hooks as the human.
 - **The front seat closes issues (CF-35).** The rigs have no tracker access and a job ends with
   a local merge the tracker never sees, so finished issues stayed open. The front seat now
   checks the lead's files at the start of a session, and marks an issue done, with the commit,
