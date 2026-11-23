@@ -237,6 +237,10 @@ the crew's login, once:
     find <crew's copy>/.foreman -type d -exec setfacl -d -m u:<you>:rX {} +
     setfacl -m u:<you>:rwx -m d:u:<you>:rwx <crew's copy>/.foreman/inbox
 
+Add `--crew-start "<command>"` to let the front seat start the crew when it finds it down: one
+command of yours, run as the crew's login, such as `sudo -n -u <login> /path/to/start-script`.
+The guard lets that exact command through and no other `sudo`.
+
 Never run git inside the crew's copy from your own login, never push to a repository the crew
 can write, and never mark either as a git `safe.directory`. Git would run the crew's git
 settings and hooks as you, which hands the crew your login. Move commits as bundle files
