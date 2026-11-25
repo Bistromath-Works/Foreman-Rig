@@ -63,7 +63,8 @@ Three cases only: **big decisions** (a direction you would want to choose), **se
 (a design that will not hold after a redesign, a red baseline, something broken outside the
 job), and **domain-specific knowledge** (facts no model can know: your fees, your rules, your
 business). Pushes and live-system steps such as database migrations are yours too: the owner
-merges locally and tells you what to run and in what order.
+merges locally and tells you what to run and in what order. A push you can hand to your front
+seat, one commit at a time (see "Pushing from the front seat").
 
 ## What the crew remembers
 
@@ -244,7 +245,44 @@ The guard lets that exact command through and no other `sudo`.
 Never run git inside the crew's copy from your own login, never push to a repository the crew
 can write, and never mark either as a git `safe.directory`. Git would run the crew's git
 settings and hooks as you, which hands the crew your login. Move commits as bundle files
-(`git bundle create`, then `git fetch <file>`).
+(`git bundle create`, then `git fetch <file>`); `scripts/foreman push` does that for you.
+
+### Pushing from the front seat
+
+The crew cannot push, so a merged job waits for you. To push without typing git, say "push" in
+the front seat. It then runs one command, with the commit you approved:
+
+    scripts/foreman push <your copy> <commit> [--crew-dir <the crew's copy>] [--migrations-applied]
+
+After a merge the lead writes `ready to push: <commit>, migrations needed: <none, or each one>`
+under "Waiting on the human" in `STATE.md`. The front seat shows you that line and asks. Each
+push needs its own yes; there is no standing approval.
+
+The command, not the session, decides whether anything is pushed. It refuses, and says why,
+unless all of these hold:
+
+- the crew's base branch is at exactly the commit you approved;
+- that commit is a fast-forward of the remote's base branch;
+- every commit it adds to the remote is a merge of a job branch whose candidate has a checker
+  PASS on record (a file under `.foreman/jobs/*/out/` that starts with `verdict: PASS` and
+  `candidate: <that commit>`) and, with a QA rig, a QA pass for that exact commit;
+- the lead's `ready to push` line names the commit, and its migrations are `none` or the
+  command was given `--migrations-applied`. The front seat adds that only when you have said
+  each one is applied. Applying them stays yours.
+
+It pushes that one commit to `origin` and nothing else: not your own branch, not anything the
+front seat wrote. Then it runs `git ls-remote` and reports `confirmed:` only if the remote shows
+the commit ("Everything up-to-date" is not a push). It tells the lead, who records the commit
+under Live systems in `STATE.md`. Your own checkout is left as it is; `git pull` when you want
+the commits.
+
+With a crew under its own login the commits come over as a bundle made by that login, so your
+login still never runs git in the crew's copy, and the crew still holds no credentials. The
+front folder's settings refuse `git push`, so this command is the session's only way to push.
+As with every guard here, that stops a session that forgets the rule, not one set on getting
+round it. What it must never do: push a commit you did not name, or report a push the remote
+does not show. How you would know it broke: the remote's base branch is not at the commit in
+the last `confirmed:` line.
 
 ## Safety rails
 

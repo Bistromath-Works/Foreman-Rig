@@ -1068,6 +1068,9 @@ ST="sudo -n -u crewlogin /opt/crew/start.sh start"
 out3="$(QA_HOME="$T/crewhome/.foreman-qa" PATH="$T/shim:$JQP" "$F" front "$P" --crew-dir "$C" --rig-url http://127.0.0.1:7434 --crew-start "$ST" 2>&1)"
 grep -qF "    $ST" "$D/CLAUDE.md" && gcheck 0 "$ST" && gcheck 2 "$ST --force" && gcheck 2 "sudo -n -u crewlogin /opt/crew/start.sh stop" && gcheck 2 "$ST; sudo -u crewlogin bash" \
   && ok "with --crew-start the front seat may run that exact command to start the crew, and no variation of it" || bad "front --crew-start" "$out3 $(cat "$B")"
+grep -qF "    $(printf '%q push %q' "$F" "$P") <commit> --crew-dir $C" "$D/CLAUDE.md" && grep -q 'only on their word' "$D/CLAUDE.md" && grep -q 'ready to push: <merge commit>, migrations needed:' "$SRC/agents/owner/guidance/role.md" \
+  && gcheck 0 "$(printf '%q push %q' "$F" "$P") abc1234 --crew-dir $C" && gcheck 2 "git push origin main" && gcheck 2 "git -C $(printf '%q' "$P") push origin abc1234:refs/heads/main" \
+  && ok "the front seat is given one push command, and its guard refuses a push by hand" || bad "front push command" "$(grep -n 'push' "$D/CLAUDE.md")"
 gcheck 0 "sudo -n -u crewlogin git -C $C merge-base --is-ancestor abc123 main" && gcheck 2 "sudo -n -u crewlogin cat $C/secret" && gcheck 2 "sudo -u crewlogin bash" \
   && ok "with a crew under another login the front guard lets sudo through for the merge check only" || bad "front sudo ban"
 out3="$(PATH="$JQP" "$F" front "$P" --crew-dir "$C" 2>&1)"; [ $? -ne 0 ] && grep -q -- "--rig-url" <<<"$out3" && ok "front refuses --crew-dir without --rig-url" || bad "front --crew-dir alone" "$out3"
@@ -1075,6 +1078,91 @@ out3="$(PATH="$JQP" "$F" front "$P" --crew-dir "$C" --rig-url http://127.0.0.1:7
 out3="$(PATH="$JQP" "$F" front "$P" --crew-dir "$T/nowhere" --rig-url http://127.0.0.1:7434 2>&1)"; [ $? -ne 0 ] && grep -q "must be able to read" <<<"$out3" && ok "front refuses a crew folder it cannot write job files to" || bad "front unreadable crew" "$out3"
 PATH="$JQP" "$F" front "$P" >/dev/null 2>&1; [ "$(jq -r '.env.OPENRIG_URL // "none"' "$S")" = none ] && grep -qF "git -C $P merge-base --is-ancestor" "$D/CLAUDE.md" \
   && grep -q "do not try to start it" "$D/CLAUDE.md" && ok "front without --crew-dir goes back to one login" || bad "front back to one login" "$(cat "$S")"
+teardown
+
+# --- push: the front seat sends the crew's checked base branch to the remote, on the human's word ---
+setup
+JQP="$PATH:$(dirname "$(command -v jq)")"
+git init -q --bare "$T/origin.git"
+git -C "$P" remote add origin "$T/origin.git"
+BR="$(git -C "$P" symbolic-ref --short HEAD)"; git -C "$P" push -q origin "$BR"
+mkdir -p "$P/.foreman/jobs" && echo .foreman/ >> "$P/.git/info/exclude"
+printf '#!/bin/sh\n[ "$1" = passed ] && [ -f "%s/qa.pass.$2" ]\n' "$T" > "$T/bin/qa"; chmod +x "$T/bin/qa"
+printf 'base_branch: %s\nqa_cmd: %s\n' "$BR" "$T/bin/qa" > "$P/.foreman/project.yaml"
+printf '## Waiting on the human\n- nothing yet\n\n## Not yet verified\n' > "$P/.foreman/STATE.md"
+# job <n> in repo <dir>: a job branch with one commit, merged with --no-ff. Sets M (the merge) and CAND.
+job() { git -C "$1" checkout -q -b "foreman/fmn-$2" && echo "$2" > "$1/f$2" && git -C "$1" add "f$2" && git -C "$1" commit -q -m "job $2" \
+  && git -C "$1" checkout -q "$BR" && git -C "$1" merge -q --no-ff -m "Merge foreman/fmn-$2" "foreman/fmn-$2"; M="$(git -C "$1" rev-parse HEAD)"; CAND="$(git -C "$1" rev-parse HEAD^2)"; }
+passfile() { mkdir -p "$1/.foreman/jobs/fmn-$2/out"; printf 'verdict: PASS\nkind: code\nround: 1\ncandidate: %s\nbase: x\n\n## Findings\nNone.\n' "$3" > "$1/.foreman/jobs/fmn-$2/out/check-r1.md"; }
+ready() { printf '## Waiting on the human\n- ready to push: `%s`, migrations needed: %s\n\n## Not yet verified\n- candidate: nothing\n' "$2" "$3" > "$1/.foreman/STATE.md"; }
+at() { git -C "$T/origin.git" rev-parse "refs/heads/$BR"; }
+push() { out="$(PATH="$JQP" "$F" push "$@" 2>&1)"; rc=$?; }
+job "$P" 1; BASE0="$(at)"
+push "$P" "${BASE0:0:12}"; [ $rc -ne 0 ] && grep -q "not ${BASE0:0:12}, the commit that was approved" <<<"$out" && [ "$(at)" = "$BASE0" ] \
+  && ok "push refuses when the crew's base branch is not at the commit the human approved" || bad "push wrong commit" "$out"
+push "$P"; [ $rc -ne 0 ] && grep -q "give the commit the human approved" <<<"$out" && ok "push needs the approved commit named" || bad "push without a commit" "$out"
+push "$P" "${M:0:12}"; [ $rc -ne 0 ] && grep -q "no checker PASS on record for ${CAND:0:12}" <<<"$out" && [ "$(at)" = "$BASE0" ] \
+  && ok "push refuses a merged commit with no checker PASS on record" || bad "push without checker PASS" "$out"
+passfile "$P" 1 "$M"; printf 'verdict: BLOCK\ncandidate: %s\n' "$CAND" > "$P/.foreman/jobs/fmn-1/out/check-r0.md"
+printf 'notes\n\nverdict: PASS\ncandidate: %s\n' "$CAND" > "$P/.foreman/jobs/fmn-1/out/code-1.md"
+push "$P" "${M:0:12}"; [ $rc -ne 0 ] && grep -q "no checker PASS on record" <<<"$out" \
+  && ok "a PASS for another commit, a BLOCK for this one, and PASS words below the header are not a checker PASS" || bad "push with the wrong PASS" "$out"
+passfile "$P" 1 "$CAND"
+push "$P" "${M:0:12}"; [ $rc -ne 0 ] && grep -q "no QA pass on record for ${CAND:0:12}" <<<"$out" && [ "$(at)" = "$BASE0" ] \
+  && ok "push refuses a merged commit with no QA pass for that exact commit" || bad "push without QA pass" "$out"
+: > "$T/qa.pass.$CAND"
+push "$P" "${M:0:12}"; [ $rc -ne 0 ] && grep -q "the lead has not marked ${M:0:12} ready" <<<"$out" && [ "$(at)" = "$BASE0" ] \
+  && ok "push refuses a commit the lead has not marked ready to push" || bad "push without the ready line" "$out"
+ready "$P" "${BASE0:0:12}" none
+push "$P" "${M:0:12}"; [ $rc -ne 0 ] && grep -q "has not marked" <<<"$out" && ok "a ready line for another commit does not count" || bad "push with another commit's ready line" "$out"
+printf '## Waiting on the human\n- ready to push: %s\n' "${M:0:12}" > "$P/.foreman/STATE.md"
+push "$P" "${M:0:12}"; [ $rc -ne 0 ] && grep -q "does not say 'migrations needed" <<<"$out" && ok "a ready line that does not name the migrations is refused" || bad "push with half a ready line" "$out"
+ready "$P" "${M:0:12}" "0019_add_column.sql, 0020_backfill.sql"
+push "$P" "${M:0:12}"; [ $rc -ne 0 ] && grep -q "needs migrations applied first: 0019_add_column.sql, 0020_backfill.sql" <<<"$out" && [ "$(at)" = "$BASE0" ] \
+  && ok "push refuses while the commit's migrations are not confirmed applied, and lists them" || bad "push with migrations" "$out"
+: > "$T/rig.calls"
+push "$P" "${M:0:12}" --migrations-applied; [ $rc -eq 0 ] && [ "$(at)" = "$M" ] && grep -q "^confirmed: origin's $BR is at $M" <<<"$out" \
+  && grep -q "^send crew-owner@foreman-my-app Pushed: origin's $BR is at $M .*Record it in STATE.md under Live systems" "$T/rig.calls" && grep -q "told the lead" <<<"$out" \
+  && ok "with --migrations-applied the checked commit is pushed, confirmed with ls-remote, and the lead is told" || bad "push" "$out $(cat "$T/rig.calls")"
+push "$P" "${M:0:12}"; [ $rc -eq 0 ] && grep -q "It was there already; nothing was pushed" <<<"$out" && ok "push of a commit origin already has confirms it and pushes nothing" || bad "push twice" "$out"
+# Two jobs waiting: both must be checked. Then a direct commit on the base branch.
+job "$P" 2; M2="$M"; passfile "$P" 2 "$CAND"; : > "$T/qa.pass.$CAND"; job "$P" 3; ready "$P" "$M" none
+push "$P" "$M"; [ $rc -ne 0 ] && grep -q "no checker PASS on record for ${CAND:0:12}" <<<"$out" && [ "$(at)" != "$M" ] \
+  && ok "with two merged jobs waiting, one unchecked job stops the push of both" || bad "push with an unchecked job in between" "$out"
+passfile "$P" 3 "$CAND"; : > "$T/qa.pass.$CAND"; sed -i 's/^qa_cmd: .*/qa_cmd: none/' "$P/.foreman/project.yaml"; rm -f "$T/qa.pass.$CAND"
+printf '#!/bin/sh\nexit 1\n' > "$T/bin/rig"
+push "$P" "$M"; [ $rc -eq 0 ] && [ "$(at)" = "$M" ] && grep -q "The lead was NOT told" <<<"$out" && grep -qF "rig send crew-owner@foreman-my-app \"Pushed: origin's $BR is at $M" <<<"$out" \
+  && ok "without a QA rig the checker PASS is enough; when the lead cannot be told, push says so and prints the message" || bad "push without QA rig" "$out"
+echo x > "$P/direct" && git -C "$P" add direct && git -C "$P" commit -q -m "straight onto the base branch"; M="$(git -C "$P" rev-parse HEAD)"; ready "$P" "$M" none
+push "$P" "$M"; [ $rc -ne 0 ] && grep -q "is not a merge of one job branch" <<<"$out" && [ "$(at)" != "$M" ] \
+  && ok "push refuses a commit made straight onto the base branch" || bad "push of a direct commit" "$out"
+git -C "$P" reset -q --hard HEAD~1
+# origin moves on without the crew: not a fast-forward.
+git clone -q "$T/origin.git" "$T/other" && git -C "$T/other" commit -q --allow-empty -m "someone else" && git -C "$T/other" push -q origin "HEAD:$BR"
+job "$P" 4; passfile "$P" 4 "$CAND"; ready "$P" "$M" none; OTHER="$(at)"
+push "$P" "$M"; [ $rc -ne 0 ] && grep -q "not a fast-forward" <<<"$out" && [ "$(at)" = "$OTHER" ] \
+  && ok "push refuses when the crew's base branch is not a fast-forward of origin's" || bad "push not fast-forward" "$out"
+teardown
+
+# A crew under another login: its commits come over as a bundle made by that login.
+setup
+JQP="$PATH:$(dirname "$(command -v jq)")"
+git init -q --bare "$T/origin.git"; git -C "$P" remote add origin "$T/origin.git"
+BR="$(git -C "$P" symbolic-ref --short HEAD)"; git -C "$P" push -q origin "$BR"
+C="$T/crew/my-app"; mkdir -p "$T/crew" && git clone -q "$P" "$C" && git -C "$C" remote remove origin
+mkdir -p "$C/.foreman/jobs"; printf 'base_branch: %s\nqa_cmd: none\n' "$BR" > "$C/.foreman/project.yaml"
+job "$C" 1; passfile "$C" 1 "$CAND"; ready "$C" "$M" none
+mkdir -p "$T/shim"; printf '#!/bin/sh\n[ "$1" = -c ] && { echo crewlogin; exit; }\nexec /usr/bin/stat "$@"\n' >"$T/shim/stat"
+printf '#!/bin/sh\n[ "$1 $2 $3 $4" = "-n -H -u crewlogin" ] || exit 1\nshift 4\necho "$*" >> "%s/sudo.calls"\nexec "$@"\n' "$T" >"$T/shim/sudo"; chmod +x "$T/shim/stat" "$T/shim/sudo"
+MINE="$(git -C "$P" rev-parse HEAD)"; : > "$T/git.calls"
+printf '#!/bin/sh\n[ -n "$IN_SUDO" ] || echo "$*" >> "%s/git.calls"\nexec /usr/bin/git "$@"\n' "$T" > "$T/shim/git"; chmod +x "$T/shim/git"
+sed -i 's|^exec "\$@"|IN_SUDO=1 exec "$@"|' "$T/shim/sudo"
+out="$(PATH="$T/shim:$JQP" "$F" push "$P" "$M" --crew-dir "$C" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && [ "$(git -C "$T/origin.git" rev-parse "refs/heads/$BR")" = "$M" ] && grep -q "bundle create" "$T/sudo.calls" \
+  && ! grep -qF "$C" "$T/git.calls" && [ "$(git -C "$P" rev-parse HEAD)" = "$MINE" ] && [ -z "$(git -C "$P" status --porcelain)" ] && grep -q "was left as it is" <<<"$out" \
+  && ok "for a crew under another login, push takes the commits as a bundle from that login, never runs git in the crew's copy itself, and leaves the human's branch alone" || bad "push --crew-dir" "$out
+git as this login: $(cat "$T/git.calls")
+sudo: $(cat "$T/sudo.calls" 2>&1)"
 teardown
 
 # Static: every agent ref, role file and skill named in the repo exists.

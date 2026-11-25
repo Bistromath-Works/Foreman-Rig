@@ -49,7 +49,8 @@ you: "build X"  →  owner reads the area, lists what to remove, plans
   it came from and a test that pins it. No source: the owner asks you.
 - **Nothing is pushed or deployed without you.** The job ends with a local merge. No seat
   pushes: each seat's runtime refuses it. You push, after any database migration the change
-  needs is live.
+  needs is live; or you say "push" in your front seat, which then pushes that one checked
+  commit for you and confirms the remote has it.
 - **Everything is written down** in `.foreman/jobs/<job-id>/`: the spec, every brief, every
   verdict, every decision, and a `RESUME.md` a fresh session can pick the job up from.
 - **You answer once.** `.foreman/STATE.md` is the crew's memory across jobs and sessions: what is

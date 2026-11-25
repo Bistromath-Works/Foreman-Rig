@@ -10,6 +10,8 @@
 #   scripts/foreman bans    <project> [--off]    make every seat's runtime refuse the banned commands (up does this)
 #   scripts/foreman front   <project> [--plugin <id>] [--crew-dir <dir> --rig-url <url> [--crew-start <command>]]
 #                           set up the human's front seat: a folder whose agent can reach the lead only
+#   scripts/foreman push    <project> <commit> [--crew-dir <dir>] [--migrations-applied]
+#                           from the front seat, on the human's word: push the crew's checked base branch
 #   scripts/foreman task    <project> <job-id> <n>          write the skeleton of builder task <n> for the owner to fill in
 #   scripts/foreman task-check   <project> <job-id> <n>     refuse a task file that is not ready to hand over
 #   scripts/foreman result-check <project> <job-id> <n>     check the builder's result against the task and the checkout
@@ -36,7 +38,7 @@ PROJECT_KEYS=(base_branch preflight_cmd verify_cmd acceptance_tests protected_pa
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-usage() { sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # --- resolve the project and its rig file -------------------------------------------------
 
@@ -802,7 +804,7 @@ cmd_bans() {
 FRONT_TEMPLATE="$ROOT/front.template.md"
 
 cmd_front() {
-  local arg project="" plugins=() want="" dir lead qa_home qa_rig list hook text k crew="" url="" login="" check startcmd="" down
+  local arg project="" plugins=() want="" dir lead qa_home qa_rig list hook text k crew="" url="" login="" check startcmd="" down push
   for arg in "$@"; do
     case "$want" in plugin) plugins+=("$arg"); want=""; continue ;; crew) crew="$arg"; want=""; continue ;; url) url="$arg"; want=""; continue ;; start) startcmd="$arg"; want=""; continue ;; esac
     case "$arg" in --plugin) want=plugin ;; --crew-dir) want=crew ;; --rig-url) want=url ;; --crew-start) want=start ;; -*) die "unknown option: $arg" ;; *) [ -z "$project" ] || die "front takes one project path"; project="$arg" ;; esac
@@ -827,6 +829,8 @@ cmd_front() {
     [ -z "$url$startcmd" ] || die "--rig-url and --crew-start go with --crew-dir"
     crew="$PROJECT"; mkdir -p "$PROJECT/.foreman/inbox"
   fi
+  push="$(printf '%q push %q' "$ROOT/scripts/foreman" "$PROJECT") <commit>"
+  [ -z "$login" ] || push="$push $(printf -- '--crew-dir %q' "$crew")"
   down="If \`rig ps\` does not show the lead running, tell the human; do not try to start it."
   [ -z "$startcmd" ] || down="If \`rig ps\` does not show the lead running, start the crew with the command below, wait a minute and look again. Still not running: tell the human.
 
@@ -837,6 +841,7 @@ cmd_front() {
     {project: $dir, background: false,
      bans: ([{text: "rig send", arg: "first"}, {text: "rig queue", arg: "--destination"} | . + {unless: [$lead], source: "front seat: the lead is the only seat it may message"}]
           + [$ARGS.positional[] | {text: ., anywhere: true, source: "front seat: the QA rig is out of reach"}]
+          + [{text: "git push", source: "front seat: a push goes through scripts/foreman push, on the human\u0027s word"}]
           + (if $login == "" then [] else [{text: "sudo", unless: ["merge-base"], allow: (if $start == "" then [] else [$start] end), source: "front seat: the crew login is only for the merge check and starting the crew"}] end))}' \
     "$qa_rig" "$qa_home" "$ROOT/scripts/qa" >"$list.tmp" && mv "$list.tmp" "$list"
   hook="$(printf '%q %q' "$ROOT/scripts/foreman-guard" "$list")"
@@ -854,17 +859,139 @@ cmd_front() {
     for (const p of env.PLUGINS.split("\n").filter(Boolean)) (j.enabledPlugins = j.enabledPlugins || {})[p] = true;
     return j;'
   text="$(cat "$FRONT_TEMPLATE")"
-  for k in "LEAD=$lead" "PROJECT=$PROJECT" "NAME=$SLUG" "CREW=$crew" "CHECK=$check" "DOWN=$down"; do text="${text//"{{${k%%=*}}}"/"${k#*=}"}"; done
+  for k in "LEAD=$lead" "PROJECT=$PROJECT" "NAME=$SLUG" "CREW=$crew" "CHECK=$check" "DOWN=$down" "PUSH=$push"; do text="${text//"{{${k%%=*}}}"/"${k#*=}"}"; done
   printf '%s\n' "$text" >"$dir/CLAUDE.md"
   say "front seat for $RIG_NAME: $dir"
   say "  may message:  $lead (and no other seat)"
   say "  out of reach: the QA rig ($qa_rig), $qa_home, $ROOT/scripts/qa"
   say "  hands jobs over as files in $crew/.foreman/inbox/"
+  say "  pushes only through: $push"
   [ -z "$url" ] || say "  crew under the login '$login'; rig in this folder talks to $url"
   [ "${#plugins[@]}" -eq 0 ] || say "  plugins on in this folder: ${plugins[*]}"
   say ""
   say "Open that folder as a project in the app you run Claude Code in. This covers Claude Code only."
   say "Check it once: ask the session to read a file under $qa_home; it must be refused."
+}
+
+# --- push: the front seat sends the crew's checked base branch to the remote ----------------
+# The crew cannot push: its runtime refuses it and its login holds no credentials. The human's
+# front seat runs this, on the human's word, for one commit:
+#
+#   scripts/foreman push <project> <commit> [--crew-dir <dir>] [--migrations-applied]
+#
+# <commit> is the commit the human approved. Nothing is pushed unless all of these hold:
+#   - the crew's base branch is at exactly that commit
+#   - it is a fast-forward of the remote's base branch
+#   - every commit it adds to the remote is a merge of a job branch whose candidate has a
+#     checker PASS on record and, with a QA rig, a QA pass for that exact commit
+#   - the lead has written "ready to push: <commit>, migrations needed: ..." under "Waiting on
+#     the human" in STATE.md, and the migrations are "none" or --migrations-applied was given
+# The push counts only when `git ls-remote` then shows the commit. The lead is told, and records it.
+#
+# With a crew under another login the commits come over as a bundle file made by that login
+# (sudo -n -u <login> git ...): the human's login never runs git inside the crew's copy. The
+# human's own branch and working tree are left as they are: only the crew's commit is pushed.
+cmd_push() {
+  local arg project="" commit="" crew="" want="" applied=0 login="" base state tip remote list c p1 cand rest qa l ready="" need tmp now msg lead
+  for arg in "$@"; do
+    case "$want" in crew) crew="$arg"; want=""; continue ;; esac
+    case "$arg" in
+      --crew-dir) want=crew ;;
+      --migrations-applied) applied=1 ;;
+      -*) die "unknown option: $arg" ;;
+      *) if [ -z "$project" ]; then project="$arg"; elif [ -z "$commit" ]; then commit="$arg"; else die "push takes a project path and one commit"; fi ;;
+    esac
+  done
+  [ -z "$want" ] || die "--crew-dir needs a folder"
+  resolve "$project"
+  [[ "$commit" =~ ^[0-9a-f]{7,40}$ ]] || die "give the commit the human approved (7 to 40 characters of its id): scripts/foreman push <project> <commit>"
+  if [ -n "$crew" ]; then
+    [ -d "$crew" ] || die "crew folder not found: $crew"
+    crew="$(cd "$crew" && pwd -P)"; login="$(stat -c %U "$crew")"
+    [ "$login" != "$(id -un)" ] || die "$crew belongs to this login; --crew-dir is for a crew under another login"
+  else
+    crew="$PROJECT"
+  fi
+  # Everything read from the crew's copy goes through the crew's own login.
+  as_crew() { if [ -n "$login" ]; then sudo -n -H -u "$login" "$@"; else "$@"; fi; }
+  lead="crew-owner@$RIG_NAME"; state="$crew/.foreman/STATE.md"
+  PROJECT_FILE="$crew/.foreman/project.yaml"
+  [ -r "$PROJECT_FILE" ] || die "cannot read $PROJECT_FILE"
+  base="$(project_value base_branch)"
+  [[ "$base" =~ ^[A-Za-z0-9._/-]+$ ]] || die "base_branch in $PROJECT_FILE is not a branch name: '$base'"
+
+  tip="$(as_crew git -C "$crew" rev-parse --verify -q "refs/heads/$base^{commit}")" && [[ "$tip" =~ ^[0-9a-f]{40}$ ]] \
+    || die "not pushed: cannot read the crew's $base branch in $crew"
+  [[ "$tip" == "$commit"* ]] \
+    || die "not pushed: the crew's $base is at ${tip:0:12}, not $commit, the commit that was approved. Tell the human which commit is there and ask again."
+  remote="$(git -C "$PROJECT" ls-remote origin "refs/heads/$base" | cut -f1)" || die "not pushed: cannot reach origin from $PROJECT"
+  [[ "$remote" =~ ^[0-9a-f]{40}$ ]] || die "not pushed: origin has no $base branch. The first push of a branch is the human's own."
+
+  if [ "$remote" != "$tip" ]; then
+    as_crew git -C "$crew" merge-base --is-ancestor "$remote" "$tip" 2>/dev/null \
+      || die "not pushed: not a fast-forward. origin's $base is at ${remote:0:12}, which is not part of the crew's $base (${tip:0:12}). The crew's copy has to take in what is on origin first."
+
+    # Every commit this push adds to origin's base branch: a merge whose second parent was checked.
+    list="$(as_crew git -C "$crew" rev-list --first-parent --parents "$remote..$tip")" || die "not pushed: cannot list the commits between origin and the crew's $base"
+    qa="$(project_value qa_cmd)"
+    while read -r c p1 cand rest; do
+      [ -n "$c" ] || continue
+      [ -n "$cand" ] && [ -z "$rest" ] \
+        || die "not pushed: ${c:0:12} on the crew's $base is not a merge of one job branch, so it has no check on record. Only merged, checked jobs are pushed."
+      awk -v want="candidate: $cand" '
+        FNR == 1 { v = 0; k = 0; head = 1 }
+        { sub(/[[:space:]]+$/, "") }
+        head && $0 == "" { head = 0 }
+        head && $0 == "verdict: PASS" { v = 1 }
+        head && $0 == want { k = 1 }
+        v && k { found = 1; exit }
+        END { exit !found }' "$crew"/.foreman/jobs/*/out/*.md 2>/dev/null \
+        || die "not pushed: no checker PASS on record for ${cand:0:12}, the commit merged by ${c:0:12} (looked for 'verdict: PASS' and 'candidate: $cand' at the top of a file in $crew/.foreman/jobs/*/out/)."
+      case "$qa" in none|"") ;; *)
+        as_crew "$qa" passed "$cand" >/dev/null 2>&1 \
+          || die "not pushed: no QA pass on record for ${cand:0:12}, the commit merged by ${c:0:12}." ;;
+      esac
+    done <<<"$list"
+
+    # The lead says the commit is ready, and names the migrations it needs.
+    [ -r "$state" ] || die "not pushed: cannot read $state"
+    while IFS= read -r l; do
+      [[ "$l" =~ [Rr]eady\ to\ push:[^0-9a-f]*([0-9a-f]{7,40}) ]] || continue
+      if [[ "$tip" == "${BASH_REMATCH[1]}"* ]]; then ready="$l"; break; fi
+    done < <(sed -n '/^## Waiting on the human/,/^## /p' "$state")
+    [ -n "$ready" ] \
+      || die "not pushed: the lead has not marked ${tip:0:12} ready. Under 'Waiting on the human' in $state there is no line 'ready to push: ${tip:0:12}, migrations needed: <none, or each one>'. Ask the lead to write it."
+    [[ "$ready" =~ [Mm]igrations\ needed:[[:space:]]*(.*)$ ]] \
+      || die "not pushed: the lead's 'ready to push' line for ${tip:0:12} does not say 'migrations needed: ...' on the same line. Ask the lead to complete it."
+    need="$(sed 's/[[:space:]`*_.]*$//; s/^[`*_]*//' <<<"${BASH_REMATCH[1]}")"
+    case "$(tr '[:upper:]' '[:lower:]' <<<"$need")" in
+      none) ;;
+      *) [ "$applied" -eq 1 ] || die "not pushed: ${tip:0:12} needs migrations applied first: ${need:-(the line names none and does not say 'none')}
+Show the human this list. Run again with --migrations-applied only when the human says each one is applied." ;;
+    esac
+
+    if [ -n "$login" ]; then
+      tmp="$(mktemp -d)"; trap "rm -rf $(printf '%q' "$tmp")" EXIT
+      git -C "$PROJECT" fetch -q origin "refs/heads/$base" || die "not pushed: cannot fetch origin's $base into $PROJECT"
+      as_crew git -C "$crew" bundle create -q - "refs/heads/$base" "^$remote" >"$tmp/crew.bundle" || die "not pushed: the crew's login could not bundle its $base branch"
+      git -C "$PROJECT" fetch -q "$tmp/crew.bundle" "refs/heads/$base" || die "not pushed: could not read the crew's bundle into $PROJECT"
+    fi
+    git -C "$PROJECT" cat-file -e "$tip^{commit}" 2>/dev/null || die "not pushed: $PROJECT does not have ${tip:0:12}"
+    git -C "$PROJECT" push -q origin "$tip:refs/heads/$base" || die "not pushed: git push was refused (see above)"
+    now="$(git -C "$PROJECT" ls-remote origin "refs/heads/$base" | cut -f1)" || now=""
+    [ "$now" = "$tip" ] || die "NOT confirmed: after the push, git ls-remote shows origin's $base at ${now:-nothing}, not $tip. Do not report a push."
+  fi
+
+  say "confirmed: origin's $base is at $tip (git ls-remote origin refs/heads/$base)."
+  [ "$remote" != "$tip" ] || say "It was there already; nothing was pushed."
+  msg="Pushed: origin's $base is at $tip (git ls-remote, $(date -u +%Y-%m-%dT%H:%MZ)), on the human's word. Record it in STATE.md under Live systems and clear its 'ready to push' line."
+  if command -v rig >/dev/null 2>&1 && rig send "$lead" "$msg" >/dev/null 2>&1; then
+    say "told the lead ($lead)."
+  else
+    say "The lead was NOT told. Send this yourself:"
+    say "    rig send $lead \"$msg\""
+  fi
+  [ -z "$login" ] || say "$PROJECT itself was left as it is; run git pull there when you want the new commits."
 }
 
 # --- builder task files ---------------------------------------------------------------------
@@ -1196,6 +1323,7 @@ case "$cmd" in
   unstick) cmd_unstick "$@" ;;
   bans) cmd_bans "$@" ;;
   front) cmd_front "$@" ;;
+  push) cmd_push "$@" ;;
   task) cmd_task "$@" ;;
   task-check) cmd_task_check "$@" ;;
   result-check) cmd_result_check "$@" ;;

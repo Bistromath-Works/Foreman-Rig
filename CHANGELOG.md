@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The front seat pushes, on the human's word (CF-42).** A merged job used to wait for the human
+  to push by hand, which is hard from a phone and once looked done when nothing had moved.
+  `scripts/foreman push <project> <commit> [--crew-dir <dir>]` pushes the crew's base branch
+  when the human names the commit. It refuses unless the crew's branch is at that commit, it is a
+  fast-forward of the remote, every commit it adds is a merged job with a checker PASS (and a QA
+  pass, with a QA rig) on record, and the lead has written `ready to push: <commit>, migrations
+  needed: ...` in `STATE.md`. Listed migrations need `--migrations-applied`. It reports
+  `confirmed:` only after `git ls-remote` shows the commit, then tells the lead. With a crew
+  under another login the commits come over as a bundle; the crew gains no credentials and no
+  push path. The front folder's guard now refuses `git push`, so the command is the only way.
+  The owner's report step now writes the `ready to push` line (two rules reworded, same length).
+  Run `scripts/foreman front ...` again for each project to give its front seat the command.
+
 - **The lead's questions reach the front seat (CF-31).** For a job from `.foreman/inbox/`, the
   lead also writes each question, and any seat stuck at a permission prompt, under "Waiting on
   the human" in `STATE.md`. The front seat reads that section every turn and sends the human's
