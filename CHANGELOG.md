@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The lead's questions reach the front seat (CF-31).** For a job from `.foreman/inbox/`, the
+  lead also writes each question, and any seat stuck at a permission prompt, under "Waiting on
+  the human" in `STATE.md`. The front seat reads that section every turn and sends the human's
+  answer to the lead with `rig send`. Its guard is unchanged: it still reaches the lead only, and
+  never answers a seat's prompt. Two owner paragraphs were rewrapped to stay within the cap.
+- **The QA gatekeeper runs its own steps without a prompt (CF-41).** Its settings now allow
+  `./qa ...` and `timeout 120 ./qa ...`, and nothing else, so a QA request no longer waits for
+  a person to approve the first command.
+
 - **The front seat is told not to attach to the lead (CF-19).** A front seat session tried to
   open the lead's terminal, which cannot work from there. The instructions now say the lead is
   already running and `rig send` is the only way to reach it.

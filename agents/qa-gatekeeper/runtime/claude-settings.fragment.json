@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./qa *)",
+      "Bash(timeout 120 ./qa *)"
+    ]
+  }
+}

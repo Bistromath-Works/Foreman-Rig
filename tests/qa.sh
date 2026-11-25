@@ -760,6 +760,12 @@ out="$(SCREEN_MAX_DIFF_CHARS=50 send "$c2")"; same "a change over the size limit
 cp "$T/keep.json" "$QA_REPOS/fixture.json"
 SRC_STATE="$(git -C "$R" for-each-ref; git -C "$R" status --porcelain)"
 
+# --- the gatekeeper's own steps need no permission prompt (CF-41) ---
+GK="$ROOT/agents/qa-gatekeeper"
+grep -q 'runtime_resources: \[.*gatekeeper-settings' "$GK/agent.yaml" \
+  && jq -e '.permissions.allow | (index("Bash(./qa *)") != null) and (index("Bash(timeout 120 ./qa *)") != null) and length == 2' "$GK/runtime/claude-settings.fragment.json" >/dev/null \
+  && ok "the gatekeeper's settings allow its ./qa steps, plain and under timeout 120, and nothing else" || bad "gatekeeper allow-list" "$(cat "$GK/runtime/claude-settings.fragment.json" 2>&1)"
+
 echo
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]

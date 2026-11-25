@@ -1007,6 +1007,9 @@ grep -q 'rig send crew-owner@foreman-my-app "New job' "$D/CLAUDE.md" && grep -qF
 grep -q 'mark its issue done and note the commit' "$D/CLAUDE.md" && grep -q 'the issue stays open' "$D/CLAUDE.md" \
   && grep -q "names that" "$D/CLAUDE.md" && grep -qF "git -C $P merge-base --is-ancestor" "$D/CLAUDE.md" \
   && ok "the front seat closes an issue only when the lead's files show the merge" || bad "front closing rule" "$(cat "$D/CLAUDE.md" 2>&1)"
+grep -q 'Read that section at the start of every turn' "$D/CLAUDE.md" && grep -q 'rig send crew-owner@foreman-my-app "Answer for' "$D/CLAUDE.md" \
+  && grep -q 'You cannot reach that' "$D/CLAUDE.md" && grep -q 'under "Waiting on' "$SRC/agents/owner/guidance/role.md" \
+  && ok "the lead asks the front seat through STATE.md, and the front seat answers the lead only, never a seat's prompt" || bad "front question route" "$(cat "$D/CLAUDE.md" 2>&1)"
 hookcmd="$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("foreman-guard"))][0]' "$S")"
 printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rig send qa-gatekeeper@foreman-qa hi"}}' | PATH="$JQP" bash -c "$hookcmd" 2>/dev/null; [ $? -eq 2 ] \
   && ok "the installed front hook refuses a message to the QA rig" || bad "front hook"
