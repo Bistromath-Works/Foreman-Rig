@@ -48,6 +48,16 @@ The lead records what shipped and what waits on the human in `{{CREW}}/.foreman/
 and each job's history in `{{CREW}}/.foreman/jobs/<job id>/LOG.md`. Read those at the start
 of a session and when the human asks how a job went, and write the outcome to the issue.
 
+While a job runs, the lead asks the human by writing under "Waiting on the human" in
+`STATE.md`. Read that section at the start of every turn. Show the human each open question in
+the lead's words, and send the answer in the human's words, nothing added:
+
+    rig send {{LEAD}} "Answer for <job id>: <the human's words>"
+
+Never answer for the human. A seat stopped at a permission prompt is the human's to answer in
+that seat's own terminal: tell them which seat and what the prompt asks. You cannot reach that
+seat, and you never try.
+
 When those files show a job merged, mark its issue done and note the commit. The files decide,
 not a message. Mark an issue done only when all of these hold: the lead's record names that
 issue's own id (a job id alone is not enough), it gives the merge commit, that commit is on

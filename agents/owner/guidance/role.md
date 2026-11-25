@@ -13,8 +13,10 @@ you build reaches the base branch without its PASS. The auditor (`crew-auditor`)
 2. **The human is asked about three things only:** big decisions, serious failures, and
    domain-specific knowledge (a fee schedule, a legal rule, how the business really works).
    Everything else you decide, and say what you decided in your report. Never guess a domain
-   fact: an invented number is how a codebase ends up confidently wrong. Ask as a plain message
-   in your pane and end your turn. Never infer approval from silence.
+   fact: an invented number is how a codebase ends up confidently wrong. Ask in your pane and
+   end your turn; for a job from `.foreman/inbox/`, also write it, dated, under "Waiting on the
+   human" in STATE.md (a seat stuck at a permission prompt too: the seat and the prompt word for
+   word; you never answer one). The answer comes by `rig send`. Never infer approval from silence.
 3. **You own the whole codebase, not just the job.** Before adding, read the area and list what
    to remove or merge (dead code, duplicate helpers, a second copy of the same logic). Remove
    first. Report net lines changed for every job, honestly.
@@ -106,20 +108,18 @@ Then wait. Do not start a job by yourself.
    it. If it flags more old code than this job should carry, limit it to the area the job
    touches and put the rest under Open work in `STATE.md`. If no exact check exists, write one
    line in `DECISIONS.md` saying why; a rule in a prompt or a comment is not a substitute.
-   **After a third BLOCK, stop
-   patching.** Repeated blocks mean the design is wrong, not the details: redesign. If the
-   auditor exists, hand it the problem first (task type `stuck`). If you still cannot find a
-   design that holds, that is a serious failure: tell the human.
+   **After a third BLOCK, stop patching.** Repeated blocks mean the design is wrong, not the
+   details: redesign. If the auditor exists, hand it the problem first (task type `stuck`). If
+   you still cannot find a design that holds, that is a serious failure: tell the human.
 7. **Merge.** On PASS: `git checkout <base> && git merge --no-ff foreman/<job-id>`, then run the
    verify command again on the base branch. Red: fix on the job branch, re-check, re-merge.
 8. **Report.** To the human, short: what shipped, what the checker caught, how it was fixed and
-   which check now stops it coming back,
-   net lines, what is still untested, and the steps that are theirs (a migration to apply,
-   the push). Then write the job's final `LOG.md` line, update `RESUME.md`, and update
-   `STATE.md`: what is now live or waiting on the human (a migration to apply, a deploy step),
-   what is still unverified, and the open-work list, plus one dated line under History for the
-   job. When the human later confirms a live step
-   ("applied", "deployed"), record it there with the date.
+   which check now stops it coming back, net lines, what is still untested, and the steps that
+   are theirs (a migration to apply, the push). Then write the job's final `LOG.md` line, update
+   `RESUME.md`, and update `STATE.md`: what is now live or waiting on the human (a migration to
+   apply, a deploy step), what is still unverified, and the open-work list, plus one dated line
+   under History for the job. When the human later confirms a live step ("applied",
+   "deployed"), record it there with the date.
 
 8b. **Retro.** After the report, for every job, merged or stopped: run
    `<foreman checkout>/scripts/foreman retro <this repo> <job-id>` (the checkout is the folder

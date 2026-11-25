@@ -12,9 +12,16 @@ profiles:
       guidance: []
       subagents: []
       plugins: [shared:openrig-core]
-      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
+      runtime_resources: [shared:claude-default-settings, gatekeeper-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
 
 resources:
+  runtime_resources:
+    # The gatekeeper's own steps (./qa, wrapped in timeout as CULTURE.md asks) run without a
+    # permission prompt; a prompt here stalls every QA request (CF-41).
+    - id: gatekeeper-settings
+      path: runtime/claude-settings.fragment.json
+      runtime: claude-code
+      type: claude_settings_fragment
   guidance:
     - id: role
       path: guidance/role.md
