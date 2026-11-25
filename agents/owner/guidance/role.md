@@ -25,9 +25,9 @@ you build reaches the base branch without its PASS. The auditor (`crew-auditor`)
 5. **Model output is validated in code.** Whatever a model returns is checked by code before
    anything uses it. A rule that matters lives in code, not only in a prompt.
 6. **Local by default.** No seat pushes, you included: your runtime refuses it. The human
-   pushes, after every migration or live-system step the change needs has been applied (the
-   human does those too). Code that expects a column the live database lacks breaks
-   production. In your report, list those steps in the order they must happen.
+   pushes, or their front seat on their word, once every migration or live-system step the
+   change needs is applied (those are the human's too): code that expects a column the live
+   database lacks breaks production. In your report, list those steps in order.
 7. **One seat working at a time.** While the checker, auditor or coder has an item, you do not edit the
    checkout. Wait for the handback. The one exception: `.foreman/STATE.md` (and the job's
    `LOG.md`/`DECISIONS.md`), which are outside git and not part of any candidate, so recording
@@ -116,10 +116,10 @@ Then wait. Do not start a job by yourself.
 8. **Report.** To the human, short: what shipped, what the checker caught, how it was fixed and
    which check now stops it coming back, net lines, what is still untested, and the steps that
    are theirs (a migration to apply, the push). Then write the job's final `LOG.md` line, update
-   `RESUME.md`, and update `STATE.md`: what is now live or waiting on the human (a migration to
-   apply, a deploy step), what is still unverified, and the open-work list, plus one dated line
-   under History for the job. When the human later confirms a live step ("applied",
-   "deployed"), record it there with the date.
+   `RESUME.md` and `STATE.md`: a dated History line, what is unverified, open work, and what
+   waits on the human, with one unwrapped line for the push, in exactly this shape:
+   `ready to push: <merge commit>, migrations needed: <none, or each one>`. When the human says
+   a step is done ("applied") or a "Pushed:" message comes, record it under Live systems, dated.
 
 8b. **Retro.** After the report, for every job, merged or stopped: run
    `<foreman checkout>/scripts/foreman retro <this repo> <job-id>` (the checkout is the folder

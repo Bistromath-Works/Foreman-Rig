@@ -18,6 +18,7 @@ Last updated: (date, by whom)
 
 ## Waiting on the human
 - (a migration to apply, a deploy step, a decision)
+- (after a merge, on one line) ready to push: (merge commit), migrations needed: (none, or each one)
 
 ## Not yet verified
 - (what no one has checked yet: a browser click-through, a real-model run, ...)
